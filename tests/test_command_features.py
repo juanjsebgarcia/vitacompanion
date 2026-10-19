@@ -164,6 +164,12 @@ class CommandFeatureTests(unittest.TestCase):
                 return 0;
             }
             int reboot_request(void) { return 0; }
+            int screenshot_save(uint32_t *width, uint32_t *height)
+            {
+                (void)width;
+                (void)height;
+                return 0;
+            }
             int version_format(char *buffer, size_t capacity)
             {
                 (void)buffer;
@@ -175,18 +181,19 @@ class CommandFeatureTests(unittest.TestCase):
             {
                 char response[2048] = {0};
                 const char expected[] =
-                    "Command\t\tDescription\n"
-                    "help   \t\tDisplay this help screen\n"
-                    "launch \t\tLaunch an app by Title ID\n"
-                    "nosleep\t\tControl automatic suspend prevention\n"
-                    "press  \t\tPress or position a synthetic input\n"
-                    "promote\t\tPromote an extracted app directory\n"
-                    "quit   \t\tQuit an app by Title ID, or all apps\n"
-                    "reboot \t\tReboot the console\n"
-                    "release\t\tRelease a synthetic input\n"
-                    "screen \t\tTurn the screen on or off\n"
-                    "version\t\tDisplay the Vita Companion version\n"
-                    "wait   \t\tWait for a duration such as 100ms or 3s\n";
+                    "Command   \t\tDescription\n"
+                    "help      \t\tDisplay this help screen\n"
+                    "launch    \t\tLaunch an app by Title ID\n"
+                    "nosleep   \t\tControl automatic suspend prevention\n"
+                    "press     \t\tPress or position a synthetic input\n"
+                    "promote   \t\tPromote an extracted app directory\n"
+                    "quit      \t\tQuit an app by Title ID, or all apps\n"
+                    "reboot    \t\tReboot the console\n"
+                    "release   \t\tRelease a synthetic input\n"
+                    "screen    \t\tTurn the screen on or off\n"
+                    "screenshot\t\tSave the screen as a BMP on the Vita\n"
+                    "version   \t\tDisplay the Vita Companion version\n"
+                    "wait      \t\tWait for a duration such as 100ms or 3s\n";
 
                 cmd_help(0, 0, response);
                 return strcmp(response, expected) == 0 ? 0 : 1;
@@ -502,13 +509,13 @@ class CommandFeatureTests(unittest.TestCase):
         self.assertNotIn("ksceGUID", kernel_source)
         self.assertNotIn("vitacompanion_reboot_initialize",
                          kernel_main_source)
-        self.assertIn("VITACOMPANION_KERNEL_ABI_VERSION 4", public_header)
+        self.assertIn("VITACOMPANION_KERNEL_ABI_VERSION 5", public_header)
         self.assertIn("vitaCompanionKernelRequestReboot", public_header)
         self.assertIn("vitaCompanionKernelForceReboot", public_header)
         self.assertIn("vitaCompanionKernelRequestReboot", exports)
         self.assertIn("vitaCompanionKernelForceReboot", exports)
-        self.assertIn("minor: 9", exports)
-        self.assertIn("minor: 9", user_exports)
+        self.assertIn("minor: 10", exports)
+        self.assertIn("minor: 10", user_exports)
         self.assertIn("kernel/reboot.c", cmake_source)
         self.assertIn("kernel/threadmgr_event_flag_list.S", cmake_source)
         self.assertIn("SceSysconForDriver_stub", cmake_source)

@@ -4,6 +4,7 @@
 #include "caller.h"
 #include "touch_patch.h"
 #include "reboot.h"
+#include "frame_capture.h"
 
 #include <psp2kern/ctrl.h>
 #include <psp2kern/kernel/modulemgr.h>
@@ -491,6 +492,29 @@ int vitaCompanionKernelForceReboot(void)
     return vitacompanion_reboot_force_syscon();
 }
 
+int vitaCompanionKernelScreenshotCapture(
+    vitacompanion_screenshot_info *info)
+{
+    if (!caller_allowed())
+        return VITACOMPANION_KERNEL_ERROR_NOT_PERMITTED;
+    return vitacompanion_screenshot_capture(info);
+}
+
+int vitaCompanionKernelScreenshotRead(uint32_t offset, void *buffer,
+    uint32_t size)
+{
+    if (!caller_allowed())
+        return VITACOMPANION_KERNEL_ERROR_NOT_PERMITTED;
+    return vitacompanion_screenshot_read(offset, buffer, size);
+}
+
+int vitaCompanionKernelScreenshotRelease(void)
+{
+    if (!caller_allowed())
+        return VITACOMPANION_KERNEL_ERROR_NOT_PERMITTED;
+    return vitacompanion_screenshot_release();
+}
+
 int module_start(SceSize argc, const void *args)
 {
     int result;
@@ -504,9 +528,17 @@ int module_start(SceSize argc, const void *args)
     if (state_mutex < 0)
         return SCE_KERNEL_START_FAILED;
 
+    if (vitacompanion_screenshot_init() < 0)
+    {
+        ksceKernelDeleteMutex(state_mutex);
+        state_mutex = -1;
+        return SCE_KERNEL_START_FAILED;
+    }
+
     result = install_touch_hooks();
     if (result < 0)
     {
+        vitacompanion_screenshot_term();
         ksceKernelDeleteMutex(state_mutex);
         state_mutex = -1;
         return SCE_KERNEL_START_FAILED;
@@ -518,6 +550,7 @@ int module_start(SceSize argc, const void *args)
     if (ctrl_thread_id < 0)
     {
         release_touch_hooks();
+        vitacompanion_screenshot_term();
         ksceKernelDeleteMutex(state_mutex);
         state_mutex = -1;
         return SCE_KERNEL_START_FAILED;
@@ -531,6 +564,7 @@ int module_start(SceSize argc, const void *args)
         ksceKernelDeleteThread(ctrl_thread_id);
         ctrl_thread_id = -1;
         release_touch_hooks();
+        vitacompanion_screenshot_term();
         ksceKernelDeleteMutex(state_mutex);
         state_mutex = -1;
         return SCE_KERNEL_START_FAILED;
@@ -557,6 +591,7 @@ int module_stop(SceSize argc, const void *args)
 
     release_touch_hooks();
     reset_ctrl_emulation();
+    vitacompanion_screenshot_term();
 
     if (state_mutex >= 0)
     {

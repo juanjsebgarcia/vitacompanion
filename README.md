@@ -106,6 +106,7 @@ echo 'press cross; wait 100ms; release cross' | nc IP_TO_PSVITA 1338
 | `reboot`  | none                            | reboot the console           |
 | `release` | input target                    | release one input or all synthetic input |
 | `screen`  | `on` or `off`                   | turn screen on or off        |
+| `screenshot` | none                         | save the screen to `ux0:data/vitacompanion/screenshot.bmp` |
 | `version` | none                            | display the loaded Vita Companion module version |
 | `wait`    | duration ending in `ms` or `s`  | wait before executing the next chained command |
 
@@ -151,6 +152,26 @@ release rear-touch 1
 ```
 
 Use `release all` to clear every synthetic button, stick, and touch.
+
+## Screenshots
+
+`tools/screenshot.py` saves a PNG of the Vita's screen on your computer. It
+needs Python 3 and nothing else:
+
+```
+VITA_IP=IP_TO_PSVITA tools/screenshot.py            # saves into ./screenshot
+VITA_IP=IP_TO_PSVITA tools/screenshot.py shots/     # or another folder
+```
+
+It sends `screenshot`, which saves the displayed frame to
+`ux0:data/vitacompanion/screenshot.bmp`, then fetches that file over FTP and
+converts it. Set `VITA_CMD_PORT` and `VITA_FTP_PORT` for a side-by-side test
+build.
+
+It works in apps that block the system screenshot, makes no sound, and shows no
+notice. It captures the frame the app has on screen at the app's own
+resolution. System overlays such as notifications or the quick menu may be
+missing, and a frame can occasionally tear.
  
  **Note**: Commands are defined in [`src/cmd_definitions.c`](https://github.com/robsdedude/vitacompanion/blob/master/src/cmd_definitions.c), you can add new commands there.
  
@@ -162,4 +183,4 @@ Use `release all` to clear every synthetic button, stick, and touch.
  
 # Acknowledgements 
 
-Thanks to xerpi for his [vita-ftploader](https://bitbucket.org/xerpi/vita-ftploader/src/87ef1d13a8aa/plugin/?at=master) plugin, I stole a lot of his code (with his permission). Thanks to cpasjuste for [PSP2SHELL](https://github.com/Cpasjuste/PSP2SHELL), it inspired me to create this tool.
+Thanks to xerpi for his [vita-ftploader](https://bitbucket.org/xerpi/vita-ftploader/src/87ef1d13a8aa/plugin/?at=master) plugin, I stole a lot of his code (with his permission). Thanks to cpasjuste for [PSP2SHELL](https://github.com/Cpasjuste/PSP2SHELL), it inspired me to create this tool. The screenshot capture follows [VitaStream](https://github.com/devnoname120/vitastream) and xerpi's [vita-udcd-uvc](https://github.com/xerpi/vita_udcd_uvc).

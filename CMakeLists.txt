@@ -59,6 +59,8 @@ add_executable(vitacompanion_kernel
         kernel/caller.h
         kernel/reboot.c
         kernel/reboot.h
+        kernel/frame_capture.c
+        kernel/frame_capture.h
         kernel/threadmgr_event_flag_list.S
         kernel/touch_patch.c)
 
@@ -74,6 +76,8 @@ endif()
 target_link_libraries(vitacompanion_kernel
   taihenForKernel_stub
   SceCtrlForDriver_stub
+  SceDisplayForDriver_stub
+  SceIftuForDriver_stub
   SceKernelSuspendForDriver_stub
   SceSysmemForDriver_stub
   SceSblACMgrForDriver_stub
@@ -114,6 +118,8 @@ add_executable(vitacompanion
         src/promote_head_template.h
         src/reboot.c
         src/reboot.h
+        src/screenshot.c
+        src/screenshot.h
         src/sha1.c
         src/sha1.h
         src/input.c
