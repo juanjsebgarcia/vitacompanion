@@ -93,6 +93,24 @@ semicolons. The final semicolon is optional:
 echo 'press cross; wait 100ms; release cross' | nc IP_TO_PSVITA 1338
 ```
 
+### Command-line tool
+
+`tools/vitacompanion` sends commands for you and prints the reply. It needs
+only Python 3, and exits non-zero when the Vita reports an error, so it suits
+scripts:
+
+```
+export VITA_IP=IP_TO_PSVITA
+tools/vitacompanion help
+tools/vitacompanion press cross
+tools/vitacompanion 'press cross; wait 100ms; release cross'
+tools/vitacompanion screenshot              # see Screenshots below
+```
+
+`VITA_CMD_PORT` (default 1338), `VITA_FTP_PORT` (default 1337) and
+`VITA_TIMEOUT` (seconds, default 60) override the defaults, for example for a
+side-by-side test build.
+
 ### Available commands
 
 | Command   | Arguments                       | Explanation                  |
@@ -155,18 +173,17 @@ Use `release all` to clear every synthetic button, stick, and touch.
 
 ## Screenshots
 
-`tools/screenshot.py` saves a PNG of the Vita's screen on your computer. It
-needs Python 3 and nothing else:
+`tools/vitacompanion screenshot` saves a PNG of the Vita's screen on your
+computer:
 
 ```
-VITA_IP=IP_TO_PSVITA tools/screenshot.py            # saves into ./screenshot
-VITA_IP=IP_TO_PSVITA tools/screenshot.py shots/     # or another folder
+VITA_IP=IP_TO_PSVITA tools/vitacompanion screenshot          # into ./screenshot
+VITA_IP=IP_TO_PSVITA tools/vitacompanion screenshot shots/   # or another folder
 ```
 
 It sends `screenshot`, which saves the displayed frame to
 `ux0:data/vitacompanion/screenshot.bmp`, then fetches that file over FTP and
-converts it. Set `VITA_CMD_PORT` and `VITA_FTP_PORT` for a side-by-side test
-build.
+converts it.
 
 It works in apps that block the system screenshot, makes no sound, and shows no
 notice. It captures the frame the app has on screen at the app's own

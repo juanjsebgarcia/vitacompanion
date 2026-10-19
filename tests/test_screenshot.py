@@ -1,14 +1,24 @@
+import contextlib
+import importlib.machinery
 import importlib.util
+import io
+import os
+import socket
 import struct
+import tempfile
+import threading
 import unittest
 import zlib
+from unittest import mock
 
 from test_command_features import ROOT, compile_and_run
 
 
 def load_tool():
-    spec = importlib.util.spec_from_file_location(
-        "screenshot_tool", ROOT / "tools" / "screenshot.py")
+    path = str(ROOT / "tools" / "vitacompanion")
+    spec = importlib.util.spec_from_loader(
+        "vitacompanion_cli",
+        importlib.machinery.SourceFileLoader("vitacompanion_cli", path))
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
@@ -81,6 +91,130 @@ class ScreenshotToolTests(unittest.TestCase):
         bmp = self.make_bmp(2, 2, [[(0, 0, 0)] * 2] * 2)
         with self.assertRaises(ValueError):
             tool.bmp_to_rgb_rows(bmp[:-1])
+
+
+class FakeCommandServer:
+    """Answers one connection per reply, like the Vita's command server."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.requests = []
+        self.listener = socket.create_server(("127.0.0.1", 0))
+        self.port = self.listener.getsockname()[1]
+        self.thread = threading.Thread(target=self.serve, daemon=True)
+        self.thread.start()
+
+    def serve(self):
+        for reply in self.replies:
+            connection, _ = self.listener.accept()
+            with connection:
+                request = b""
+                while not request.endswith(b"\n"):
+                    data = connection.recv(1024)
+                    if not data:
+                        break
+                    request += data
+                self.requests.append(request.decode())
+                connection.sendall(reply.encode())
+        self.listener.close()
+
+
+class CommandLineTests(unittest.TestCase):
+    def run_cli(self, args, replies, extra_env=None):
+        tool = load_tool()
+        server = FakeCommandServer(replies)
+        env = {"VITA_IP": "127.0.0.1", "VITA_CMD_PORT": str(server.port),
+               "VITA_TIMEOUT": "5"}
+        env.update(extra_env or {})
+        out = io.StringIO()
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, env), \
+                contextlib.redirect_stdout(out), \
+                contextlib.redirect_stderr(err):
+            code = tool.main(["vitacompanion"] + args)
+        server.thread.join(5)
+        return code, out.getvalue(), err.getvalue(), server.requests
+
+    def test_sends_joined_command_and_prints_reply(self):
+        code, out, _, requests = self.run_cli(
+            ["press", "left-stick", "0", "128"], ["Input pressed.\n"])
+        self.assertEqual(code, 0)
+        self.assertEqual(requests, ["press left-stick 0 128\n"])
+        self.assertEqual(out, "Input pressed.\n")
+
+    def test_chained_reply_with_error_exits_non_zero(self):
+        code, out, _, _ = self.run_cli(
+            ["press start; quit NOPE00000"],
+            ["Input pressed.\nError: cannot quit the app.\n"])
+        self.assertEqual(code, 1)
+        self.assertIn("Error: cannot quit", out)
+
+    def test_requires_vita_ip(self):
+        tool = load_tool()
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {}, clear=True), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(tool.main(["vitacompanion", "ps"]), 2)
+        self.assertIn("VITA_IP", err.getvalue())
+
+    def test_help_without_arguments(self):
+        tool = load_tool()
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(tool.main(["vitacompanion"]), 2)
+        self.assertIn("screenshot [DIR]", out.getvalue())
+
+    def test_screenshot_fetches_and_saves_png(self):
+        tool = load_tool()
+        bmp = ScreenshotToolTests().make_bmp(
+            2, 1, [[(255, 0, 0), (0, 0, 255)]])
+        with tempfile.TemporaryDirectory() as tmp:
+            target = os.path.join(tmp, "shots")
+            out = io.StringIO()
+            with mock.patch.object(tool, "fetch", return_value=bmp) as fetch, \
+                    mock.patch.dict(os.environ, {"VITA_IP": "127.0.0.1"}), \
+                    mock.patch.object(
+                        tool, "send_command",
+                        return_value="Saved ux0:data/vitacompanion/"
+                                     "screenshot.bmp (2x1).") as send, \
+                    contextlib.redirect_stdout(out):
+                self.assertEqual(
+                    tool.main(["vitacompanion", "screenshot", target]), 0)
+                self.assertEqual(
+                    tool.main(["vitacompanion", "screenshot", target]), 0)
+            paths = out.getvalue().split()
+            self.assertEqual(len(paths), 2)
+            self.assertNotEqual(paths[0], paths[1])
+            self.assertEqual(send.call_args[0][2], "screenshot")
+            self.assertEqual(fetch.call_args[0][1], 1337)
+            with open(paths[0], "rb") as png:
+                self.assertEqual(decode_png_rgb(png.read()),
+                                 (2, 1, [bytes((255, 0, 0, 0, 0, 255))]))
+
+    def test_screenshot_error_reply_is_reported(self):
+        tool = load_tool()
+        err = io.StringIO()
+        with mock.patch.object(tool, "send_command",
+                               return_value="Error: Could not take "
+                                            "screenshot (0x80AC0003)."), \
+                mock.patch.object(tool, "fetch") as fetch, \
+                mock.patch.dict(os.environ, {"VITA_IP": "127.0.0.1"}), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(tool.main(["vitacompanion", "screenshot"]), 1)
+        fetch.assert_not_called()
+        self.assertIn("0x80AC0003", err.getvalue())
+
+    def test_unreachable_vita_is_an_error(self):
+        tool = load_tool()
+        listener = socket.create_server(("127.0.0.1", 0))
+        port = listener.getsockname()[1]
+        listener.close()
+        err = io.StringIO()
+        with mock.patch.dict(os.environ, {"VITA_IP": "127.0.0.1",
+                                          "VITA_CMD_PORT": str(port)}), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(tool.main(["vitacompanion", "ps"]), 1)
+        self.assertTrue(err.getvalue().startswith("Error:"))
 
 
 USER_HEADERS = {

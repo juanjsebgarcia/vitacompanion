@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
-"""Save a PNG of the Vita's screen.
+"""Send commands to Vita Companion and save screenshots.
 
-Sends `screenshot` to the command server, fetches the BMP over FTP and
-writes DIR/vita-YYYYmmdd-HHMMSS.png. Uses only the standard library.
+    vitacompanion COMMAND [ARGS...]      send a command and print the reply
+    vitacompanion "press start; wait 500ms; release start"
+    vitacompanion screenshot [DIR]       save DIR/vita-YYYYmmdd-HHMMSS.png
+                                         (DIR defaults to ./screenshot)
 
-    VITA_IP=10.0.0.90 tools/screenshot.py [DIR]
+Run `vitacompanion help` for the commands the Vita understands. Exits 1 when
+the Vita replies with an error.
 
-VITA_CMD_PORT (default 1338) and VITA_FTP_PORT (default 1337) select a
-side-by-side test build.
+Environment: VITA_IP (required), VITA_CMD_PORT (default 1338),
+VITA_FTP_PORT (default 1337), VITA_TIMEOUT in seconds (default 60).
+Uses only the Python 3 standard library.
 """
 
 import ftplib
@@ -20,11 +24,11 @@ import time
 import zlib
 
 REMOTE_PATH = "ux0:/data/vitacompanion/screenshot.bmp"
-COMMAND_TIMEOUT = 30
+DEFAULT_TIMEOUT = 60
 
 
-def send_command(host, port, command):
-    with socket.create_connection((host, port), timeout=COMMAND_TIMEOUT) as s:
+def send_command(host, port, command, timeout=DEFAULT_TIMEOUT):
+    with socket.create_connection((host, port), timeout=timeout) as s:
         # No half-close: the Vita then never sends its reply.
         s.sendall(command.encode() + b"\n")
         chunks = []
@@ -36,10 +40,10 @@ def send_command(host, port, command):
     return b"".join(chunks).decode(errors="replace").strip()
 
 
-def fetch(host, port, path):
+def fetch(host, port, path, timeout=DEFAULT_TIMEOUT):
     buffer = io.BytesIO()
     with ftplib.FTP() as ftp:
-        ftp.connect(host, port, timeout=COMMAND_TIMEOUT)
+        ftp.connect(host, port, timeout=timeout)
         ftp.login()
         ftp.retrbinary("RETR " + path, buffer.write, blocksize=65536)
     return buffer.getvalue()
@@ -88,25 +92,18 @@ def png_bytes(width, height, rows):
             chunk(b"IEND", b""))
 
 
-def main(argv):
-    if len(argv) > 2 or (len(argv) == 2 and argv[1] in ("-h", "--help")):
-        print(__doc__.strip())
-        return 0 if len(argv) == 2 else 2
+def is_error(reply):
+    return any(line.startswith("Error") for line in reply.splitlines())
 
-    host = os.environ.get("VITA_IP")
-    if not host:
-        print("Error: set VITA_IP to the Vita's address.", file=sys.stderr)
-        return 2
-    cmd_port = int(os.environ.get("VITA_CMD_PORT", "1338"))
-    ftp_port = int(os.environ.get("VITA_FTP_PORT", "1337"))
-    directory = argv[1] if len(argv) == 2 else "screenshot"
 
-    reply = send_command(host, cmd_port, "screenshot")
+def save_screenshot(host, cmd_port, ftp_port, directory, timeout):
+    reply = send_command(host, cmd_port, "screenshot", timeout)
     if not reply.startswith("Saved "):
         print(reply or "Error: no reply from the Vita.", file=sys.stderr)
         return 1
 
-    width, height, rows = bmp_to_rgb_rows(fetch(host, ftp_port, REMOTE_PATH))
+    width, height, rows = bmp_to_rgb_rows(
+        fetch(host, ftp_port, REMOTE_PATH, timeout))
     os.makedirs(directory, exist_ok=True)
     stem = os.path.join(directory, time.strftime("vita-%Y%m%d-%H%M%S"))
     path = stem + ".png"
@@ -118,6 +115,47 @@ def main(argv):
         output.write(png_bytes(width, height, rows))
     print(path)
     return 0
+
+
+def main(argv):
+    args = argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0 if args else 2
+
+    host = os.environ.get("VITA_IP")
+    if not host:
+        print("Error: set VITA_IP to the Vita's address.", file=sys.stderr)
+        return 2
+    try:
+        cmd_port = int(os.environ.get("VITA_CMD_PORT", "1338"))
+        ftp_port = int(os.environ.get("VITA_FTP_PORT", "1337"))
+        timeout = float(os.environ.get("VITA_TIMEOUT", DEFAULT_TIMEOUT))
+    except ValueError:
+        print("Error: VITA_CMD_PORT, VITA_FTP_PORT and VITA_TIMEOUT must be "
+              "numbers.", file=sys.stderr)
+        return 2
+
+    try:
+        if args[0] == "screenshot":
+            if len(args) > 2:
+                print("Error: usage: vitacompanion screenshot [DIR]",
+                      file=sys.stderr)
+                return 2
+            return save_screenshot(host, cmd_port, ftp_port,
+                                   args[1] if len(args) == 2 else "screenshot",
+                                   timeout)
+
+        reply = send_command(host, cmd_port, " ".join(args), timeout)
+    except (OSError, ftplib.Error, ValueError) as error:
+        print("Error: %s" % error, file=sys.stderr)
+        return 1
+
+    if not reply:
+        print("Error: no reply from the Vita.", file=sys.stderr)
+        return 1
+    print(reply)
+    return 1 if is_error(reply) else 0
 
 
 if __name__ == "__main__":
