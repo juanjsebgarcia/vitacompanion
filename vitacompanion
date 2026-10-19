@@ -6,8 +6,11 @@
     vitacompanion screenshot [DIR]       save DIR/vita-YYYYmmdd-HHMMSS.png
                                          (DIR defaults to ./screenshot)
 
-Run `vitacompanion help` for the commands the Vita understands. Exits 1 when
-the Vita replies with an error.
+Run `vitacompanion help` for the commands the Vita understands.
+
+Output: the Vita's reply on stdout; for `screenshot`, only the PNG's path.
+Exit codes: 0 success; 1 when any reply line starts with "Error", the Vita
+can't be reached or the download fails; 2 for usage problems.
 
 Environment: VITA_IP (required), VITA_CMD_PORT (default 1338),
 VITA_FTP_PORT (default 1337), VITA_TIMEOUT in seconds (default 60).
