@@ -15,7 +15,7 @@ from test_command_features import ROOT, compile_and_run
 
 
 def load_tool():
-    path = str(ROOT / "tools" / "vitacompanion")
+    path = str(ROOT / "vitacompanion")
     spec = importlib.util.spec_from_loader(
         "vitacompanion_cli",
         importlib.machinery.SourceFileLoader("vitacompanion_cli", path))
