@@ -21,6 +21,13 @@
 #define NO_FREE_PHYSICAL_PAGE ((int)0x80024302)
 #define MAX_FRAME_WIDTH 1920
 #define MAX_FRAME_HEIGHT 1088
+/*
+ * The capture is held in strips of this many rows, each its own small
+ * physically contiguous block: a busy game can leave no single 2 MB block.
+ */
+#define STRIP_ROWS 32
+#define MAX_STRIPS ((MAX_FRAME_HEIGHT + STRIP_ROWS - 1) / STRIP_ROWS)
+#define NO_FREE_PHYSICAL_PAGE_UNIT ((int)0x80024303)
 
 /* The SDK's SceIftuPlaneState names these fields differently. */
 typedef struct {
@@ -62,10 +69,17 @@ static SceIftuCscParams identity_params = {
 /* The emulator's display process, e.g. PSPEMU001 under Adrenaline. */
 #define SWAPPED_OWNER_PREFIX "PSPEMU"
 
+typedef struct {
+    SceUID block;
+    uint8_t *base;
+    uintptr_t paddr;
+} capture_strip;
+
 static SceUID capture_mutex = -1;
-static SceUID capture_block = -1;
-static uint8_t *capture_base;
-static uint32_t capture_size;
+static capture_strip strips[MAX_STRIPS];
+static unsigned int strip_count;
+static uint32_t strip_size;     /* Bytes of image per full strip */
+static uint32_t capture_size;   /* Bytes of image in the whole capture */
 
 static unsigned int display_to_iftu_pixelformat(unsigned int format)
 {
@@ -105,10 +119,16 @@ static void capture_unlock(void)
 
 static void free_capture(void)
 {
-    if (capture_block >= 0)
-        ksceKernelFreeMemBlock(capture_block);
-    capture_block = -1;
-    capture_base = NULL;
+    unsigned int i;
+
+    for (i = 0; i < strip_count; ++i)
+    {
+        if (strips[i].block >= 0)
+            ksceKernelFreeMemBlock(strips[i].block);
+    }
+    memset(strips, 0, sizeof(strips));
+    strip_count = 0;
+    strip_size = 0;
     capture_size = 0;
 }
 
@@ -177,7 +197,7 @@ static int get_displayed_frame(uint32_t request, SceDisplayFrameBufInfo *info,
     return 0;
 }
 
-static int allocate_capture(uint32_t size, uintptr_t *paddr)
+static int allocate_strip(uint32_t size, capture_strip *strip)
 {
     SceKernelAllocMemBlockKernelOpt opt;
     void *base;
@@ -188,40 +208,59 @@ static int allocate_capture(uint32_t size, uintptr_t *paddr)
     opt.attr = SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_PHYCONT |
         SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_HAS_ALIGNMENT;
     opt.alignment = 0x1000;
-    capture_block = ksceKernelAllocMemBlock("vitacompanion_screenshot",
+    strip->block = ksceKernelAllocMemBlock("vitacompanion_screenshot",
         SCE_KERNEL_MEMBLOCK_TYPE_KERNEL_ROOT_NC_RW, size, &opt);
-    /* Large DMA buffers may not fit in the ordinary kernel physical pool. */
-    if (capture_block == NO_FREE_PHYSICAL_PAGE)
-        capture_block = ksceKernelAllocMemBlock("vitacompanion_screenshot",
+    /* DMA buffers may not fit in the ordinary kernel physical pool. */
+    if (strip->block == NO_FREE_PHYSICAL_PAGE ||
+        strip->block == NO_FREE_PHYSICAL_PAGE_UNIT)
+        strip->block = ksceKernelAllocMemBlock("vitacompanion_screenshot",
             SCE_KERNEL_MEMBLOCK_TYPE_KERNEL_ROOT_PHYCONT_NC_RW, size, &opt);
-    if (capture_block < 0)
+    if (strip->block < 0)
     {
-        result = capture_block;
-        capture_block = -1;
+        result = strip->block;
+        strip->block = -1;
         return result;
     }
 
-    result = ksceKernelGetMemBlockBase(capture_block, &base);
+    result = ksceKernelGetMemBlockBase(strip->block, &base);
     if (result >= 0)
-        result = ksceKernelGetPaddr(base, paddr);
+        result = ksceKernelGetPaddr(base, &strip->paddr);
     if (result < 0)
-    {
-        free_capture();
         return result;
-    }
-
-    capture_base = base;
-    capture_size = size;
+    strip->base = base;
     return 0;
 }
 
-static int convert_frame(uintptr_t dst_paddr, unsigned int dst_pitch,
-    const SceDisplayFrameBufInfo *info)
+static int allocate_capture(unsigned int pitch, unsigned int height)
+{
+    unsigned int count = (height + STRIP_ROWS - 1) / STRIP_ROWS;
+    uint32_t block_size = ALIGN(pitch * STRIP_ROWS * 4, 0x1000);
+    unsigned int i;
+    int result;
+
+    strip_size = pitch * STRIP_ROWS * 4;
+    capture_size = pitch * height * 4;
+    for (i = 0; i < count; ++i)
+    {
+        strip_count = i + 1;
+        result = allocate_strip(block_size, &strips[i]);
+        if (result < 0)
+        {
+            free_capture();
+            return result;
+        }
+    }
+    return 0;
+}
+
+/* Converts `height` rows starting at row `y` into one strip. */
+static int convert_rows(uintptr_t dst_paddr, unsigned int dst_pitch,
+    const SceDisplayFrameBufInfo *info, unsigned int y, unsigned int height)
 {
     unsigned int width = info->framebuf.width;
     unsigned int width_aligned = ALIGN(width, 16);
-    unsigned int height = info->framebuf.height;
     unsigned int format = info->framebuf.pixelformat;
+    unsigned int bpp = display_pixelformat_bpp(format);
     SceIftuConvParams params;
     iftu_plane_state src;
     SceIftuFrameBuf dst;
@@ -237,9 +276,8 @@ static int convert_frame(uintptr_t dst_paddr, unsigned int dst_pitch,
     src.fb.pixelformat = display_to_iftu_pixelformat(format);
     src.fb.width = width_aligned;
     src.fb.height = height;
-    src.fb.leftover_stride = (info->framebuf.pitch - width_aligned) *
-        display_pixelformat_bpp(format);
-    src.fb.paddr0 = info->paddr;
+    src.fb.leftover_stride = (info->framebuf.pitch - width_aligned) * bpp;
+    src.fb.paddr0 = info->paddr + y * info->framebuf.pitch * bpp;
     src.src_w = 0x10000;
     src.src_h = 0x10000;
 
@@ -250,6 +288,25 @@ static int convert_frame(uintptr_t dst_paddr, unsigned int dst_pitch,
     dst.paddr0 = dst_paddr;
 
     return ksceIftuCsc(&dst, (SceIftuPlaneState *)&src, &params);
+}
+
+/* Converts every strip back to back, so the frame is copied in one go. */
+static int convert_frame(unsigned int pitch,
+    const SceDisplayFrameBufInfo *info)
+{
+    unsigned int height = info->framebuf.height;
+    unsigned int i;
+
+    for (i = 0; i < strip_count; ++i)
+    {
+        unsigned int y = i * STRIP_ROWS;
+        unsigned int rows = height - y < STRIP_ROWS ? height - y : STRIP_ROWS;
+        int result = convert_rows(strips[i].paddr, pitch, info, y, rows);
+
+        if (result < 0)
+            return result;
+    }
+    return 0;
 }
 
 int vitacompanion_screenshot_init(void)
@@ -273,7 +330,6 @@ int vitacompanion_screenshot_capture(vitacompanion_screenshot_info *info)
 {
     SceDisplayFrameBufInfo frame;
     vitacompanion_screenshot_info result_info;
-    uintptr_t paddr;
     unsigned int pitch;
     uint32_t index = 0;
     int result;
@@ -299,14 +355,13 @@ int vitacompanion_screenshot_capture(vitacompanion_screenshot_info *info)
         goto report;
 
     pitch = ALIGN(frame.framebuf.width, 16);
-    result = allocate_capture(
-        ALIGN(pitch * ALIGN(frame.framebuf.height, 8) * 4, 0x1000), &paddr);
+    result = allocate_capture(pitch, frame.framebuf.height);
     if (result < 0)
         goto report;
 
     result_info.swapped_red_blue =
         owner_swaps_red_blue(result_info.buffers[index].title_id);
-    result = convert_frame(paddr, pitch, &frame);
+    result = convert_frame(pitch, &frame);
     if (result < 0)
     {
         free_capture();
@@ -338,18 +393,31 @@ report:
 int vitacompanion_screenshot_read(uint32_t offset, void *buffer,
     uint32_t size)
 {
-    int result;
+    uint8_t *destination = buffer;
+    int result = 0;
 
     if (!buffer || size == 0)
         return VITACOMPANION_KERNEL_ERROR_INVALID_ARGUMENT;
 
     capture_lock();
-    if (!capture_base)
+    if (strip_count == 0)
         result = VITACOMPANION_KERNEL_ERROR_NO_FRAME;
     else if (offset > capture_size || size > capture_size - offset)
         result = VITACOMPANION_KERNEL_ERROR_INVALID_ARGUMENT;
-    else
-        result = ksceKernelCopyToUser(buffer, capture_base + offset, size);
+    while (result >= 0 && size != 0)
+    {
+        unsigned int index = offset / strip_size;
+        uint32_t within = offset % strip_size;
+        uint32_t length = strip_size - within;
+
+        if (length > size)
+            length = size;
+        result = ksceKernelCopyToUser(destination,
+            strips[index].base + within, length);
+        destination += length;
+        offset += length;
+        size -= length;
+    }
     capture_unlock();
     return result < 0 ? result : 0;
 }

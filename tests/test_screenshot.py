@@ -711,15 +711,22 @@ KERNEL_STUBS = r"""
     }
     static int frame_results[2];
     static int lookups[2];
-    static unsigned char block[4 << 20];
-    static int alloc_results[8] = {0x1000, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000, 0x7000, 0x8000};
-    static unsigned int alloc_types[8];
+    #define SLOT_SIZE 0x40000
+    static unsigned char arena[40 * SLOT_SIZE];
+    static unsigned int alloc_types[64];
     static SceSize alloc_size;
     static int allocs;
+    static int blocks_live;
     static int frees;
+    static int fail_alloc_at = -1;      /* allocation index to fail */
+    static int fail_alloc_code = (int)0x80024303;
+    static int fail_alloc_types = 1;    /* how many tries fail there */
+    static int csc_calls;
     static int csc_result;
+    static int csc_fail_at = -1;
     static SceIftuFrameBuf csc_dst;
     static SceIftuFrameBuf csc_src;
+    static SceIftuFrameBuf csc_first_src;
     static unsigned int csc_scale[2];
     static int locked;
 
@@ -737,32 +744,44 @@ KERNEL_STUBS = r"""
         return 0;
     }
 
+    static int slots_used;
+
     SceUID ksceKernelAllocMemBlock(const char *name, unsigned int type,
         SceSize size, SceKernelAllocMemBlockKernelOpt *opt)
     {
+        int index = allocs++;
+
         (void)name;
         if (!(opt->attr & SCE_KERNEL_ALLOC_MEMBLOCK_ATTR_PHYCONT) ||
-            size > sizeof(block))
+            size > SLOT_SIZE)
             return -1;
-        alloc_types[allocs] = type;
+        alloc_types[index < 64 ? index : 63] = type;
         alloc_size = size;
-        return alloc_results[allocs++];
+        if (fail_alloc_at >= 0 && slots_used == fail_alloc_at &&
+            fail_alloc_types > 0)
+        {
+            --fail_alloc_types;
+            return fail_alloc_code;
+        }
+        ++blocks_live;
+        /* Slots are reused across captures; one capture needs at most 34. */
+        return 0x1000 + slots_used++ % 40;
     }
     int ksceKernelFreeMemBlock(SceUID uid)
     {
         (void)uid;
         ++frees;
+        --blocks_live;
         return 0;
     }
     int ksceKernelGetMemBlockBase(SceUID uid, void **base)
     {
-        (void)uid;
-        *base = block;
+        *base = arena + (uid - 0x1000) * SLOT_SIZE;
         return 0;
     }
     int ksceKernelVAtoPA(const void *va, uintptr_t *pa)
     {
-        *pa = va == block ? 0x60000000 : 0;
+        *pa = 0x60000000 + (uintptr_t)((const unsigned char *)va - arena);
         return 0;
     }
     int ksceKernelCopyFromUser(void *dst, const void *src, SceSize len)
@@ -793,9 +812,14 @@ KERNEL_STUBS = r"""
         --locked;
         return 0;
     }
+    /* Stamps each strip's first byte with its call number (from 1). */
     int ksceIftuCsc(SceIftuFrameBuf *dst, SceIftuPlaneState *src,
         SceIftuConvParams *params)
     {
+        if (csc_calls == 0)
+            csc_first_src = src->fb;
+        if (csc_calls++ == csc_fail_at)
+            return (int)0x803F0704;
         csc_dst = *dst;
         csc_src = src->fb;
         csc_scale[0] = src->fields[3];
@@ -804,7 +828,7 @@ KERNEL_STUBS = r"""
             return -1;
         csc_ctm_00 = params->csc_params1->ctm[0][0];
         csc_ctm_02 = params->csc_params1->ctm[0][2];
-        block[0] = 0xAB;
+        arena[dst->paddr0 - 0x60000000] = (unsigned char)csc_calls;
         return csc_result;
     }
 
@@ -838,26 +862,40 @@ class ScreenshotKernelTests(unittest.TestCase):
 
     def test_captures_primary_frame_at_native_size(self):
         self.run_kernel(r"""
+            uint32_t strip = 960 * 32 * 4;
+
             set_frame(0, 960, 544, 960, 0);
             if (vitacompanion_screenshot_capture(&info) != 0)
                 return 1;
             if (info.width != 960 || info.height != 544 ||
                 info.pitch != 960 || info.buffer != 0)
                 return 2;
-            if (alloc_types[0] != 0x10208006 || alloc_size != 960 * 544 * 4)
+            /* 17 strips of 32 rows, each its own small block. */
+            if (allocs != 17 || blocks_live != 17 || csc_calls != 17 ||
+                alloc_types[0] != 0x10208006 || alloc_size != 0x1E000)
                 return 3;
-            if (csc_src.paddr0 != 0x40000000 || csc_src.width != 960 ||
-                csc_src.leftover_stride != 0 || csc_src.pixelformat != 0x10 ||
-                csc_dst.paddr0 != 0x60000000 || csc_dst.width != 960 ||
-                csc_dst.height != 544 || csc_dst.pixelformat != 0x10 ||
+            if (csc_first_src.paddr0 != 0x40000000 ||
+                csc_first_src.height != 32 ||
+                csc_src.paddr0 != 0x40000000 + 512 * 960 * 4 ||
+                csc_src.width != 960 || csc_src.leftover_stride != 0 ||
+                csc_src.pixelformat != 0x10 ||
+                csc_dst.paddr0 != 0x60000000 + 16 * SLOT_SIZE ||
+                csc_dst.width != 960 || csc_dst.height != 32 ||
+                csc_dst.pixelformat != 0x10 ||
                 csc_scale[0] != 0x10000 || csc_scale[1] != 0x10000)
                 return 4;
-            if (vitacompanion_screenshot_read(0, out, 1) != 0 ||
-                out[0] != 0xAB || locked != 0)
+            /* Reads walk the strips in order, across strip boundaries. */
+            if (vitacompanion_screenshot_read(0, out, 1) != 0 || out[0] != 1 ||
+                vitacompanion_screenshot_read(strip * 16, out, 1) != 0 ||
+                out[0] != 17 || locked != 0)
                 return 5;
+            arena[strip - 1] = 0x5A;
+            if (vitacompanion_screenshot_read(strip - 1, out, 2) != 0 ||
+                out[0] != 0x5A || out[1] != 2)
+                return 6;
             if (csc_ctm_00 != 0x200 || csc_ctm_02 != 0 ||
                 info.swapped_red_blue != 0)
-                return 6;
+                return 7;
             return 0;
         """)
 
@@ -898,9 +936,10 @@ class ScreenshotKernelTests(unittest.TestCase):
             if (info.width != 720 || info.pitch != 720 ||
                 info.source_pixelformat != 0x50000000)
                 return 3;
-            if (csc_src.pixelformat != 0x04 ||
-                csc_src.leftover_stride != (768 - 720) * 2 ||
-                csc_src.paddr0 != 0x40000001)
+            if (csc_first_src.pixelformat != 0x04 ||
+                csc_first_src.leftover_stride != (768 - 720) * 2 ||
+                csc_first_src.paddr0 != 0x40000001 ||
+                csc_src.paddr0 != 0x40000001 + 384 * 768 * 2)
                 return 4;
             return 0;
         """)
@@ -910,10 +949,16 @@ class ScreenshotKernelTests(unittest.TestCase):
             set_frame(0, 500, 300, 512, 0);
             if (vitacompanion_screenshot_capture(&info) != 0)
                 return 1;
+            /* 300 rows: nine full strips and a last one of 12 rows. */
             if (info.width != 500 || info.pitch != 512 ||
                 csc_dst.width != 512 || csc_src.leftover_stride != 0 ||
-                alloc_size != 512 * 304 * 4)
+                csc_calls != 10 || csc_dst.height != 12 ||
+                alloc_size != 512 * 32 * 4)
                 return 2;
+            if (vitacompanion_screenshot_read(512 * 300 * 4 - 4, out, 4) != 0 ||
+                vitacompanion_screenshot_read(512 * 300 * 4 - 3, out, 4) !=
+                    VITACOMPANION_KERNEL_ERROR_INVALID_ARGUMENT)
+                return 3;
             return 0;
         """)
 
@@ -946,7 +991,7 @@ class ScreenshotKernelTests(unittest.TestCase):
             info.buffer = VITACOMPANION_SCREENSHOT_BUFFER_1;
             if (vitacompanion_screenshot_capture(&info) != 0)
                 return 1;
-            if (info.buffer != 1 || csc_src.paddr0 != 0x40000001 ||
+            if (info.buffer != 1 || csc_first_src.paddr0 != 0x40000001 ||
                 info.pitch != 960)
                 return 2;
             if (info.buffers[0].pid != 0x10011 ||
@@ -957,8 +1002,9 @@ class ScreenshotKernelTests(unittest.TestCase):
                 return 3;
             memset(&info, 0, sizeof(info));
             info.buffer = VITACOMPANION_SCREENSHOT_BUFFER_0;
+            csc_calls = 0;
             if (vitacompanion_screenshot_capture(&info) != 0 ||
-                info.buffer != 0 || csc_src.paddr0 != 0x40000000)
+                info.buffer != 0 || csc_first_src.paddr0 != 0x40000000)
                 return 4;
             return 0;
         """)
@@ -982,11 +1028,38 @@ class ScreenshotKernelTests(unittest.TestCase):
 
     def test_falls_back_to_phycont_pool(self):
         self.run_kernel(r"""
-            alloc_results[0] = (int)0x80024302;
             set_frame(0, 960, 544, 960, 0);
+            fail_alloc_at = 5;
+            fail_alloc_code = (int)0x80024303;
             if (vitacompanion_screenshot_capture(&info) != 0)
                 return 1;
-            if (allocs != 2 || alloc_types[1] != 0x30808006)
+            if (allocs != 18 || alloc_types[5] != 0x10208006 ||
+                alloc_types[6] != 0x30808006 || blocks_live != 17)
+                return 2;
+            return 0;
+        """)
+
+    def test_older_out_of_memory_code_also_falls_back(self):
+        self.run_kernel(r"""
+            set_frame(0, 960, 544, 960, 0);
+            fail_alloc_at = 0;
+            fail_alloc_code = (int)0x80024302;
+            if (vitacompanion_screenshot_capture(&info) != 0 ||
+                alloc_types[1] != 0x30808006)
+                return 1;
+            return 0;
+        """)
+
+    def test_failed_strip_allocation_frees_the_others(self):
+        self.run_kernel(r"""
+            set_frame(0, 960, 544, 960, 0);
+            fail_alloc_at = 9;
+            fail_alloc_types = 2;
+            if (vitacompanion_screenshot_capture(&info) != (int)0x80024303)
+                return 1;
+            if (blocks_live != 0 || frees != 9 || csc_calls != 0 ||
+                vitacompanion_screenshot_read(0, out, 1) !=
+                    VITACOMPANION_KERNEL_ERROR_NO_FRAME || locked != 0)
                 return 2;
             return 0;
         """)
@@ -994,10 +1067,10 @@ class ScreenshotKernelTests(unittest.TestCase):
     def test_conversion_failure_frees_buffer(self):
         self.run_kernel(r"""
             set_frame(0, 960, 544, 960, 0);
-            csc_result = (int)0x803F0704;
+            csc_fail_at = 4;
             if (vitacompanion_screenshot_capture(&info) != (int)0x803F0704)
                 return 1;
-            if (frees != 1)
+            if (frees != 17 || blocks_live != 0)
                 return 2;
             if (vitacompanion_screenshot_read(0, out, 1) !=
                     VITACOMPANION_KERNEL_ERROR_NO_FRAME)
@@ -1026,15 +1099,15 @@ class ScreenshotKernelTests(unittest.TestCase):
                 vitacompanion_screenshot_read(0, 0, 16) !=
                     VITACOMPANION_KERNEL_ERROR_INVALID_ARGUMENT)
                 return 4;
-            if (vitacompanion_screenshot_capture(&info) != 0 || frees != 1)
+            if (vitacompanion_screenshot_capture(&info) != 0 || frees != 17)
                 return 5;
             vitacompanion_screenshot_release();
-            if (frees != 2 ||
+            if (frees != 34 || blocks_live != 0 ||
                 vitacompanion_screenshot_read(0, out, 1) !=
                     VITACOMPANION_KERNEL_ERROR_NO_FRAME)
                 return 6;
             vitacompanion_screenshot_term();
-            if (frees != 2 || locked != 0)
+            if (frees != 34 || locked != 0)
                 return 7;
             return 0;
         """)
