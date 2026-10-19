@@ -17,7 +17,9 @@ set(VITACOMPANION_FTP_PORT 1337 CACHE STRING "FTP control port")
 set(VITACOMPANION_CMD_PORT 1338 CACHE STRING "Command server port")
 set(VITACOMPANION_MODULE_NAME "vitacompanion" CACHE STRING "Vita module name")
 option(VITACOMPANION_SCREENSHOT_TIMINGS
-  "Report per-stage screenshot timings in the command reply" OFF)
+  "Report screenshot timings and display buffers in the command reply" OFF)
+option(VITACOMPANION_SCREENSHOT_DEBUG_LOG
+  "Write a step log to ux0:data/vitacompanion/screenshot.log" OFF)
 option(VITACOMPANION_KERNEL_ALLOW_ANY_CALLER
   "Let any process use the kernel input and reboot API (debugging only)" OFF)
 
@@ -141,6 +143,10 @@ target_compile_definitions(vitacompanion PRIVATE
 if(VITACOMPANION_SCREENSHOT_TIMINGS)
   target_compile_definitions(vitacompanion PRIVATE
     VITACOMPANION_SCREENSHOT_TIMINGS
+  )
+endif()
+if(VITACOMPANION_SCREENSHOT_DEBUG_LOG)
+  target_compile_definitions(vitacompanion PRIVATE
     VITACOMPANION_SCREENSHOT_DEBUG_LOG
   )
 endif()

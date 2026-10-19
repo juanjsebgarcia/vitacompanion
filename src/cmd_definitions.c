@@ -36,7 +36,7 @@ const cmd_definition cmd_definitions[] = {
     {.name = "reboot", .description = "Reboot the console", .min_arg_count = 0, .max_arg_count = 0, .validator = NULL, .executor = &cmd_reboot},
     {.name = "release", .description = "Release a synthetic input", .min_arg_count = 1, .max_arg_count = 2, .validator = &validate_release, .executor = &cmd_release},
     {.name = "screen", .description = "Turn the screen on or off", .min_arg_count = 1, .max_arg_count = 1, .validator = NULL, .executor = &cmd_screen},
-    {.name = "screenshot", .description = "Save the screen as a PNG on the Vita", .min_arg_count = 0, .max_arg_count = 0, .validator = NULL, .executor = &cmd_screenshot},
+    {.name = "screenshot", .description = "Save the screen as a PNG on the Vita", .min_arg_count = 0, .max_arg_count = 1, .validator = NULL, .executor = &cmd_screenshot},
     {.name = "version", .description = "Display the Vita Companion version", .min_arg_count = 0, .max_arg_count = 0, .validator = NULL, .executor = &cmd_version},
     {.name = "wait", .description = "Wait for a duration such as 100ms or 3s", .min_arg_count = 1, .max_arg_count = 1, .validator = &validate_wait, .executor = &cmd_wait}
 };
@@ -158,40 +158,84 @@ void cmd_reboot(char **arg_list, size_t arg_count, char *res_msg) {
   strcpy(res_msg, "Rebooting...\n");
 }
 
+#ifdef VITACOMPANION_SCREENSHOT_TIMINGS
+static void append_buffer_report(char *res_msg,
+    const vitacompanion_screenshot_info *info)
+{
+  unsigned int index;
+
+  for (index = 0; index < 2; ++index) {
+    const vitacompanion_screenshot_buffer *buffer = &info->buffers[index];
+    size_t used = strlen(res_msg);
+
+    snprintf(res_msg + used, CMD_RESPONSE_MAX - used,
+        "  buffer %u: result 0x%08X pid 0x%08X (%s) paddr 0x%08X "
+        "format 0x%08X %ux%u pitch %u\n",
+        index, (unsigned int)buffer->result, (unsigned int)buffer->pid,
+        buffer->title_id[0] ? buffer->title_id : "?",
+        (unsigned int)buffer->paddr, (unsigned int)buffer->pixelformat,
+        (unsigned int)buffer->width, (unsigned int)buffer->height,
+        (unsigned int)buffer->pitch);
+  }
+}
+#endif
+
 void cmd_screenshot(char **arg_list, size_t arg_count, char *res_msg) {
+  vitacompanion_screenshot_info info;
   screenshot_timings timings;
-  uint32_t width;
-  uint32_t height;
+  uint32_t buffer = VITACOMPANION_SCREENSHOT_BUFFER_AUTO;
+  char format_note[64] = "";
   int result;
 
-  (void)arg_list;
-  (void)arg_count;
   if (!input_is_ready()) {
     strcpy(res_msg, "Error: The kernel module is missing or out of date.\n");
     return;
   }
 
-  result = screenshot_save(&width, &height, &timings);
+  if (arg_count == 2) {
+    if (!strcmp(arg_list[1], "0")) {
+      buffer = VITACOMPANION_SCREENSHOT_BUFFER_0;
+    } else if (!strcmp(arg_list[1], "1")) {
+      buffer = VITACOMPANION_SCREENSHOT_BUFFER_1;
+    } else {
+      strcpy(res_msg, "Error: The buffer must be 0 or 1.\n");
+      return;
+    }
+  }
+
+  result = screenshot_save(buffer, &info, &timings);
   if (result < 0) {
     snprintf(res_msg, CMD_RESPONSE_MAX,
         "Error: Could not take screenshot (0x%08X).\n", (unsigned int)result);
+#ifdef VITACOMPANION_SCREENSHOT_TIMINGS
+    append_buffer_report(res_msg, &info);
+#endif
     return;
   }
 
+  /* Name unusual source formats, so colour problems can be traced. */
+  if (info.source_pixelformat != 0)
+    snprintf(format_note, sizeof(format_note), ", format 0x%08X",
+        (unsigned int)info.source_pixelformat);
+  if (info.swapped_red_blue)
+    strncat(format_note, ", red/blue swapped",
+        sizeof(format_note) - strlen(format_note) - 1);
+
 #ifdef VITACOMPANION_SCREENSHOT_TIMINGS
   snprintf(res_msg, CMD_RESPONSE_MAX,
-      "Saved " SCREENSHOT_PATH " (%ux%u) in %u ms "
-      "(capture %u, read %u, encode %u, write %u).\n",
-      (unsigned int)width, (unsigned int)height,
-      (unsigned int)(timings.total_us / 1000),
+      "Saved " SCREENSHOT_PATH " (%ux%u%s) in %u ms "
+      "(buffer %u, capture %u, read %u, encode %u, write %u).\n",
+      (unsigned int)info.width, (unsigned int)info.height, format_note,
+      (unsigned int)(timings.total_us / 1000), (unsigned int)info.buffer,
       (unsigned int)(timings.capture_us / 1000),
       (unsigned int)(timings.read_us / 1000),
       (unsigned int)(timings.encode_us / 1000),
       (unsigned int)(timings.write_us / 1000));
+  append_buffer_report(res_msg, &info);
 #else
   snprintf(res_msg, CMD_RESPONSE_MAX,
-      "Saved " SCREENSHOT_PATH " (%ux%u) in %u ms.\n",
-      (unsigned int)width, (unsigned int)height,
+      "Saved " SCREENSHOT_PATH " (%ux%u%s) in %u ms.\n",
+      (unsigned int)info.width, (unsigned int)info.height, format_note,
       (unsigned int)(timings.total_us / 1000));
 #endif
 }

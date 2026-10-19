@@ -242,7 +242,9 @@ USER_STUBS = r"""
     static int released;
     static int capture_result;
     static int mkdir_result = (int)0x80010011;
-    static vitacompanion_screenshot_info capture_info = {3, 2, 16, 0};
+    static vitacompanion_screenshot_info capture_info = {
+        .width = 3, .height = 2, .pitch = 16};
+    static uint32_t requested_buffer = 99;
 
     SceUID sceIoOpen(const char *path, int flags, int mode)
     {
@@ -297,6 +299,7 @@ USER_STUBS = r"""
     int vitaCompanionKernelScreenshotCapture(
         vitacompanion_screenshot_info *info)
     {
+        requested_buffer = info->buffer;
         if (capture_result < 0)
             return capture_result;
         *info = capture_info;
@@ -446,12 +449,14 @@ class ScreenshotUserTests(unittest.TestCase):
     def test_writes_trimmed_rgb_png(self):
         png = self.run_user(r"""
             screenshot_timings timings;
-            uint32_t width = 0;
-            uint32_t height = 0;
+            vitacompanion_screenshot_info info;
 
-            if (screenshot_save(&width, &height, &timings) != 0)
+            if (screenshot_save(VITACOMPANION_SCREENSHOT_BUFFER_1, &info,
+                    &timings) != 0)
                 return 1;
-            if (width != 3 || height != 2 || renamed != 1 || released != 1)
+            if (requested_buffer != VITACOMPANION_SCREENSHOT_BUFFER_1 ||
+                info.width != 3 || info.height != 2 ||
+                renamed != 1 || released != 1)
                 return 2;
             if (priority != 0x40 || lowest_priority != 0xA0 || yields == 0)
                 return 5;
@@ -463,6 +468,19 @@ class ScreenshotUserTests(unittest.TestCase):
         """)
         self.assertEqual(decode_png_rgb(png),
                          (3, 2, self.expected_rows(3, 2)))
+
+    def test_swapped_capture_puts_red_and_blue_back(self):
+        png = self.run_user(r"""
+            capture_info.swapped_red_blue = 1;
+            if (screenshot_save(0, 0, 0) != 0)
+                return 1;
+            return dump_file() ? 0 : 2;
+        """)
+        self.assertEqual(
+            decode_png_rgb(png),
+            (3, 2, [bytes(value for x in range(3)
+                          for value in (x & 0xFF, y & 0xFF, 0x80))
+                    for y in range(2)]))
 
     def test_full_frame_spans_several_idat_chunks(self):
         png = self.run_user(r"""
@@ -620,6 +638,7 @@ KERNEL_HEADERS = {
         #pragma once
         #include <psp2kern/types.h>
         int ksceKernelCopyToUser(void *dst, const void *src, SceSize len);
+        int ksceKernelCopyFromUser(void *dst, const void *src, SceSize len);
     """,
     "psp2kern/kernel/threadmgr.h": r"""
         #pragma once
@@ -629,6 +648,12 @@ KERNEL_HEADERS = {
         int ksceKernelDeleteMutex(SceUID id);
         int ksceKernelLockMutex(SceUID id, int count, unsigned int *timeout);
         int ksceKernelUnlockMutex(SceUID id, int count);
+    """,
+    "psp2kern/kernel/sysroot.h": r"""
+        #pragma once
+        #include <psp2kern/types.h>
+        int ksceKernelSysrootGetProcessTitleId(SceUID pid, char *titleid,
+            SceSize len);
     """,
     "psp2kern/lowio/iftu.h": r"""
         #pragma once
@@ -666,16 +691,29 @@ KERNEL_STUBS = r"""
     #include <psp2kern/kernel/sysmem.h>
     #include <psp2kern/kernel/sysmem/address_space.h>
     #include <psp2kern/kernel/sysmem/data_transfers.h>
+    #include <psp2kern/kernel/sysroot.h>
     #include <psp2kern/kernel/threadmgr.h>
     #include <psp2kern/lowio/iftu.h>
     #include <string.h>
 
     static SceDisplayFrameBufInfo frames[2];
+    static unsigned int csc_ctm_00;
+    static unsigned int csc_ctm_02;
+
+    /* PID 0x30033 is the PSP emulator under Adrenaline; 0x40044 is
+       Adrenaline's own app, which never owns the displayed frame. */
+    int ksceKernelSysrootGetProcessTitleId(SceUID pid, char *titleid,
+        SceSize len)
+    {
+        strncpy(titleid, pid == 0x30033 ? "PSPEMU001" :
+            pid == 0x40044 ? "PCSE00PSP" : "PCSE00001", len);
+        return 0;
+    }
     static int frame_results[2];
     static int lookups[2];
     static unsigned char block[4 << 20];
-    static int alloc_results[2] = {0x1000, 0x2000};
-    static unsigned int alloc_types[2];
+    static int alloc_results[8] = {0x1000, 0x2000, 0x3000, 0x4000, 0x5000, 0x6000, 0x7000, 0x8000};
+    static unsigned int alloc_types[8];
     static SceSize alloc_size;
     static int allocs;
     static int frees;
@@ -727,6 +765,11 @@ KERNEL_STUBS = r"""
         *pa = va == block ? 0x60000000 : 0;
         return 0;
     }
+    int ksceKernelCopyFromUser(void *dst, const void *src, SceSize len)
+    {
+        memcpy(dst, src, len);
+        return 0;
+    }
     int ksceKernelCopyToUser(void *dst, const void *src, SceSize len)
     {
         memcpy(dst, src, len);
@@ -757,11 +800,10 @@ KERNEL_STUBS = r"""
         csc_src = src->fb;
         csc_scale[0] = src->fields[3];
         csc_scale[1] = src->fields[4];
-        if (params->alpha != 0xFF || params->csc_control != 1 ||
-            params->csc_params1->ctm[0][0] != 0x200 ||
-            params->csc_params1->ctm[0][2] != 0 ||
-            params->csc_params1->ctm[2][2] != 0x200)
+        if (params->alpha != 0xFF || params->csc_control != 1)
             return -1;
+        csc_ctm_00 = params->csc_params1->ctm[0][0];
+        csc_ctm_02 = params->csc_params1->ctm[0][2];
         block[0] = 0xAB;
         return csc_result;
     }
@@ -784,6 +826,7 @@ class ScreenshotKernelTests(unittest.TestCase):
             KERNEL_STUBS + "\nint main(void)\n{\n"
             "    vitacompanion_screenshot_info info;\n"
             "    unsigned char out[16];\n"
+            "    memset(&info, 0, sizeof(info));\n"
             "    if (vitacompanion_screenshot_init() < 0)\n"
             "        return 100;\n"
             + body + "\n}\n",
@@ -799,7 +842,7 @@ class ScreenshotKernelTests(unittest.TestCase):
             if (vitacompanion_screenshot_capture(&info) != 0)
                 return 1;
             if (info.width != 960 || info.height != 544 ||
-                info.pitch != 960 || lookups[1] != 0)
+                info.pitch != 960 || info.buffer != 0)
                 return 2;
             if (alloc_types[0] != 0x10208006 || alloc_size != 960 * 544 * 4)
                 return 3;
@@ -811,6 +854,34 @@ class ScreenshotKernelTests(unittest.TestCase):
                 return 4;
             if (vitacompanion_screenshot_read(0, out, 1) != 0 ||
                 out[0] != 0xAB || locked != 0)
+                return 5;
+            if (csc_ctm_00 != 0x200 || csc_ctm_02 != 0 ||
+                info.swapped_red_blue != 0)
+                return 6;
+            return 0;
+        """)
+
+    def test_adrenaline_frames_swap_red_and_blue(self):
+        self.run_kernel(r"""
+            set_frame(0, 960, 544, 1024, 0);
+            frames[0].pid = 0x30033;
+            if (vitacompanion_screenshot_capture(&info) != 0)
+                return 1;
+            if (info.swapped_red_blue != 1 || csc_ctm_00 != 0x200 ||
+                csc_ctm_02 != 0 ||
+                strcmp(info.buffers[0].title_id, "PSPEMU001") != 0)
+                return 2;
+            frames[0].pid = 0x10011;
+            memset(&info, 0, sizeof(info));
+            if (vitacompanion_screenshot_capture(&info) != 0)
+                return 3;
+            if (info.swapped_red_blue != 0 || csc_ctm_00 != 0x200 ||
+                strcmp(info.buffers[0].title_id, "PCSE00001") != 0)
+                return 4;
+            frames[0].pid = 0x40044;
+            memset(&info, 0, sizeof(info));
+            if (vitacompanion_screenshot_capture(&info) != 0 ||
+                info.swapped_red_blue != 0)
                 return 5;
             return 0;
         """)
@@ -863,6 +934,49 @@ class ScreenshotKernelTests(unittest.TestCase):
                 return 3;
             if (allocs != 0 || locked != 0)
                 return 4;
+            return 0;
+        """)
+
+    def test_forced_buffer_and_report(self):
+        self.run_kernel(r"""
+            set_frame(0, 960, 544, 960, 0);
+            set_frame(1, 960, 544, 1024, 0);
+            frames[0].pid = 0x10011;
+            frames[1].pid = 0x20022;
+            info.buffer = VITACOMPANION_SCREENSHOT_BUFFER_1;
+            if (vitacompanion_screenshot_capture(&info) != 0)
+                return 1;
+            if (info.buffer != 1 || csc_src.paddr0 != 0x40000001 ||
+                info.pitch != 960)
+                return 2;
+            if (info.buffers[0].pid != 0x10011 ||
+                info.buffers[0].paddr != 0x40000000 ||
+                info.buffers[1].pid != 0x20022 ||
+                info.buffers[1].pitch != 1024 ||
+                info.buffers[0].result != 0)
+                return 3;
+            memset(&info, 0, sizeof(info));
+            info.buffer = VITACOMPANION_SCREENSHOT_BUFFER_0;
+            if (vitacompanion_screenshot_capture(&info) != 0 ||
+                info.buffer != 0 || csc_src.paddr0 != 0x40000000)
+                return 4;
+            return 0;
+        """)
+
+    def test_forced_empty_buffer_fails_with_report(self):
+        self.run_kernel(r"""
+            set_frame(0, 960, 544, 960, 0);
+            frame_results[1] = -7;
+            info.buffer = VITACOMPANION_SCREENSHOT_BUFFER_1;
+            if (vitacompanion_screenshot_capture(&info) != -7)
+                return 1;
+            if (info.buffers[1].result != -7 ||
+                info.buffers[0].paddr != 0x40000000 || allocs != 0)
+                return 2;
+            info.buffer = 3;
+            if (vitacompanion_screenshot_capture(&info) !=
+                    VITACOMPANION_KERNEL_ERROR_INVALID_ARGUMENT)
+                return 3;
             return 0;
         """)
 

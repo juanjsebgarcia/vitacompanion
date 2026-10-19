@@ -1,5 +1,7 @@
 #pragma once
 
+#include <vitacompanion_kernel.h>
+
 #include <stdint.h>
 
 #define SCREENSHOT_DIRECTORY "ux0:data/vitacompanion"
@@ -22,6 +24,10 @@ typedef struct {
     uint32_t total_us;
 } screenshot_timings;
 
-/* Saves the displayed frame to SCREENSHOT_PATH as an RGB PNG. */
-int screenshot_save(uint32_t *width, uint32_t *height,
+/*
+ * Saves the displayed frame to SCREENSHOT_PATH as an RGB PNG. `buffer` is a
+ * VITACOMPANION_SCREENSHOT_BUFFER_* request; `info` receives the capture's
+ * size, format and what each display buffer held.
+ */
+int screenshot_save(uint32_t buffer, vitacompanion_screenshot_info *info,
     screenshot_timings *timings);

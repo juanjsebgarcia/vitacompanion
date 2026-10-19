@@ -223,16 +223,24 @@ static int deflate_into_idat(png_writer *writer, const uint8_t *data,
 }
 
 /* Each PNG row is a filter byte (0, none) and R,G,B from the B,G,R,X capture. */
-static void convert_row(uint8_t *row, const uint8_t *source, uint32_t width)
+/*
+ * The capture is B,G,R,X; frames the kernel flags as swapped hold R,G,B,X.
+ * The swap is done here because IFTU ignored a channel-swap matrix for the
+ * PSP emulator's padded frames.
+ */
+static void convert_row(uint8_t *row, const uint8_t *source, uint32_t width,
+    int swapped_red_blue)
 {
+    unsigned int red = swapped_red_blue ? 0 : 2;
+    unsigned int blue = 2 - red;
     uint32_t x;
 
     *row++ = 0;
     for (x = 0; x < width; ++x)
     {
-        row[0] = source[2];
+        row[0] = source[red];
         row[1] = source[1];
-        row[2] = source[0];
+        row[2] = source[blue];
         row += 3;
         source += 4;
     }
@@ -276,7 +284,8 @@ static int write_pixels(png_writer *writer,
         for (index = 0; index < rows; ++index)
         {
             start = sceKernelGetProcessTimeWide();
-            convert_row(row, chunk + index * pitch_size, info->width);
+            convert_row(row, chunk + index * pitch_size, info->width,
+                (int)info->swapped_red_blue);
             writer->timings->encode_us += elapsed_us(start);
             result = deflate_into_idat(writer, row, row_size, Z_NO_FLUSH);
             if (result < 0)
@@ -361,17 +370,20 @@ static int write_png(const vitacompanion_screenshot_info *info,
     return result;
 }
 
-int screenshot_save(uint32_t *width, uint32_t *height,
+int screenshot_save(uint32_t buffer, vitacompanion_screenshot_info *info,
     screenshot_timings *timings)
 {
-    vitacompanion_screenshot_info info;
+    vitacompanion_screenshot_info local_info;
     screenshot_timings local_timings;
     SceUInt64 start = sceKernelGetProcessTimeWide();
     SceUInt64 capture_start;
     int result;
 
+    if (!info)
+        info = &local_info;
     if (!timings)
         timings = &local_timings;
+    memset(info, 0, sizeof(*info));
     memset(timings, 0, sizeof(*timings));
 
     result = sceIoMkdir(SCREENSHOT_DIRECTORY, 0777);
@@ -379,36 +391,30 @@ int screenshot_save(uint32_t *width, uint32_t *height,
         return result;
 
     DEBUG_LOG("start\n");
-    memset(&info, 0, sizeof(info));
+    info->buffer = buffer;
     capture_start = sceKernelGetProcessTimeWide();
-    result = vitaCompanionKernelScreenshotCapture(&info);
+    result = vitaCompanionKernelScreenshotCapture(info);
     timings->capture_us = elapsed_us(capture_start);
     DEBUG_LOG("captured 0x%08X in %u us\n", (unsigned int)result,
         (unsigned int)timings->capture_us);
     if (result < 0)
         return result;
 
-    if (info.width == 0 || info.height == 0 || info.pitch < info.width ||
-        info.pitch * 4 > SCREENSHOT_CHUNK_SIZE)
+    if (info->width == 0 || info->height == 0 ||
+        info->pitch < info->width ||
+        info->pitch * 4 > SCREENSHOT_CHUNK_SIZE)
         result = VITACOMPANION_SCREENSHOT_ERROR_INVALID_FRAME;
     else
     {
         int priority = sceKernelGetThreadCurrentPriority();
 
         sceKernelChangeThreadPriority(0, SCREENSHOT_ENCODE_PRIORITY);
-        result = write_png(&info, timings);
+        result = write_png(info, timings);
         if (priority >= 0)
             sceKernelChangeThreadPriority(0, priority);
     }
     vitaCompanionKernelScreenshotRelease();
-    DEBUG_LOG("done 0x%08X\n", (unsigned int)result);
     timings->total_us = elapsed_us(start);
-
-    if (result < 0)
-        return result;
-    if (width)
-        *width = info.width;
-    if (height)
-        *height = info.height;
-    return 0;
+    DEBUG_LOG("done 0x%08X\n", (unsigned int)result);
+    return result;
 }

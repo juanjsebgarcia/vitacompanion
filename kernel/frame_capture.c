@@ -9,6 +9,7 @@
 #include <psp2kern/kernel/sysmem.h>
 #include <psp2kern/kernel/sysmem/address_space.h>
 #include <psp2kern/kernel/sysmem/data_transfers.h>
+#include <psp2kern/kernel/sysroot.h>
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/lowio/iftu.h>
 #include <stddef.h>
@@ -52,6 +53,14 @@ static SceIftuCscParams identity_params = {
         {    0,     0, 0x200}
     }
 };
+
+/*
+ * Frames from the PSP emulator (which Adrenaline runs in) are labelled
+ * A8B8G8R8 but hold R and B the other way round; the screen shows them
+ * correctly. The capture flags them, and the user module swaps the channels.
+ */
+/* The emulator's display process, e.g. PSPEMU001 under Adrenaline. */
+#define SWAPPED_OWNER_PREFIX "PSPEMU"
 
 static SceUID capture_mutex = -1;
 static SceUID capture_block = -1;
@@ -103,28 +112,68 @@ static void free_capture(void)
     capture_size = 0;
 }
 
-static int get_displayed_frame(SceDisplayFrameBufInfo *info)
+static int query_frame(int head, int index, SceDisplayFrameBufInfo *info,
+    vitacompanion_screenshot_buffer *report)
 {
-    int head = ksceDisplayGetPrimaryHead();
     int result;
 
     memset(info, 0, sizeof(*info));
     info->size = sizeof(*info);
-    result = ksceDisplayGetProcFrameBufInternal(-1, head, 0, info);
-    if (result < 0 || info->paddr == 0)
-    {
-        memset(info, 0, sizeof(*info));
-        info->size = sizeof(*info);
-        result = ksceDisplayGetProcFrameBufInternal(-1, head, 1, info);
-    }
-    if (result < 0)
-        return result;
-    if (info->paddr == 0 ||
-        info->framebuf.width == 0 || info->framebuf.height == 0 ||
-        info->framebuf.width > MAX_FRAME_WIDTH ||
-        info->framebuf.height > MAX_FRAME_HEIGHT ||
-        info->framebuf.pitch < ALIGN(info->framebuf.width, 16))
+    result = ksceDisplayGetProcFrameBufInternal(-1, head, index, info);
+    report->result = result;
+    report->pid = info->pid;
+    report->paddr = info->paddr;
+    report->pixelformat = info->framebuf.pixelformat;
+    report->width = info->framebuf.width;
+    report->height = info->framebuf.height;
+    report->pitch = info->framebuf.pitch;
+    memset(report->title_id, 0, sizeof(report->title_id));
+    if (result >= 0 && info->pid > 0)
+        ksceKernelSysrootGetProcessTitleId(info->pid, report->title_id,
+            sizeof(report->title_id) - 1);
+    return result;
+}
+
+static int owner_swaps_red_blue(const char *title_id)
+{
+    return strncmp(title_id, SWAPPED_OWNER_PREFIX,
+        sizeof(SWAPPED_OWNER_PREFIX) - 1) == 0;
+}
+
+static int frame_is_usable(int result, const SceDisplayFrameBufInfo *info)
+{
+    return result >= 0 && info->paddr != 0 &&
+        info->framebuf.width != 0 && info->framebuf.height != 0 &&
+        info->framebuf.width <= MAX_FRAME_WIDTH &&
+        info->framebuf.height <= MAX_FRAME_HEIGHT &&
+        info->framebuf.pitch >= ALIGN(info->framebuf.width, 16);
+}
+
+/* Looks up both buffers, so callers can see what each one holds. */
+static int get_displayed_frame(uint32_t request, SceDisplayFrameBufInfo *info,
+    vitacompanion_screenshot_info *report, uint32_t *index)
+{
+    SceDisplayFrameBufInfo frames[2];
+    int head = ksceDisplayGetPrimaryHead();
+    int results[2];
+    int chosen;
+
+    results[0] = query_frame(head, 0, &frames[0], &report->buffers[0]);
+    results[1] = query_frame(head, 1, &frames[1], &report->buffers[1]);
+
+    if (request == VITACOMPANION_SCREENSHOT_BUFFER_0)
+        chosen = 0;
+    else if (request == VITACOMPANION_SCREENSHOT_BUFFER_1)
+        chosen = 1;
+    else
+        chosen = results[0] >= 0 && frames[0].paddr != 0 ? 0 : 1;
+
+    if (results[chosen] < 0)
+        return results[chosen];
+    if (!frame_is_usable(results[chosen], &frames[chosen]))
         return VITACOMPANION_KERNEL_ERROR_NO_FRAME;
+    *info = frames[chosen];
+    *index = (uint32_t)chosen;
     return 0;
 }
 
@@ -226,9 +275,17 @@ int vitacompanion_screenshot_capture(vitacompanion_screenshot_info *info)
     vitacompanion_screenshot_info result_info;
     uintptr_t paddr;
     unsigned int pitch;
+    uint32_t index = 0;
     int result;
 
     if (!info)
+        return VITACOMPANION_KERNEL_ERROR_INVALID_ARGUMENT;
+    memset(&result_info, 0, sizeof(result_info));
+    result = ksceKernelCopyFromUser(&result_info.buffer, &info->buffer,
+        sizeof(result_info.buffer));
+    if (result < 0)
+        return result;
+    if (result_info.buffer > VITACOMPANION_SCREENSHOT_BUFFER_1)
         return VITACOMPANION_KERNEL_ERROR_INVALID_ARGUMENT;
 
     capture_lock();
@@ -236,32 +293,44 @@ int vitacompanion_screenshot_capture(vitacompanion_screenshot_info *info)
 
     /* Start just after a flip, so the frame stays on screen while copied. */
     ksceDisplayWaitVblankStart();
-    result = get_displayed_frame(&frame);
+    result = get_displayed_frame(result_info.buffer, &frame, &result_info,
+        &index);
     if (result < 0)
-        goto out;
+        goto report;
 
     pitch = ALIGN(frame.framebuf.width, 16);
     result = allocate_capture(
         ALIGN(pitch * ALIGN(frame.framebuf.height, 8) * 4, 0x1000), &paddr);
     if (result < 0)
-        goto out;
+        goto report;
 
+    result_info.swapped_red_blue =
+        owner_swaps_red_blue(result_info.buffers[index].title_id);
     result = convert_frame(paddr, pitch, &frame);
     if (result < 0)
     {
         free_capture();
-        goto out;
+        goto report;
     }
 
+    result_info.buffer = index;
     result_info.width = frame.framebuf.width;
     result_info.height = frame.framebuf.height;
     result_info.pitch = pitch;
     result_info.source_pixelformat = frame.framebuf.pixelformat;
-    result = ksceKernelCopyToUser(info, &result_info, sizeof(result_info));
-    if (result < 0)
-        free_capture();
 
-out:
+report:
+    /* Report the buffers even on failure, for diagnosis. */
+    {
+        int copy_result = ksceKernelCopyToUser(
+            info, &result_info, sizeof(result_info));
+
+        if (result >= 0 && copy_result < 0)
+        {
+            free_capture();
+            result = copy_result;
+        }
+    }
     capture_unlock();
     return result < 0 ? result : 0;
 }

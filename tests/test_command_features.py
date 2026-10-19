@@ -165,11 +165,12 @@ class CommandFeatureTests(unittest.TestCase):
             }
             int reboot_request(void) { return 0; }
             #include "screenshot.h"
-            int screenshot_save(uint32_t *width, uint32_t *height,
+            int screenshot_save(uint32_t buffer,
+                vitacompanion_screenshot_info *info,
                 screenshot_timings *timings)
             {
-                (void)width;
-                (void)height;
+                (void)buffer;
+                (void)info;
                 (void)timings;
                 return 0;
             }
@@ -512,7 +513,7 @@ class CommandFeatureTests(unittest.TestCase):
         self.assertNotIn("ksceGUID", kernel_source)
         self.assertNotIn("vitacompanion_reboot_initialize",
                          kernel_main_source)
-        self.assertIn("VITACOMPANION_KERNEL_ABI_VERSION 5", public_header)
+        self.assertIn("VITACOMPANION_KERNEL_ABI_VERSION 7", public_header)
         self.assertIn("vitaCompanionKernelRequestReboot", public_header)
         self.assertIn("vitaCompanionKernelForceReboot", public_header)
         self.assertIn("vitaCompanionKernelRequestReboot", exports)
