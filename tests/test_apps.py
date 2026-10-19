@@ -74,6 +74,9 @@ class AppListTests(unittest.TestCase):
             {
                 int index;
 
+                /* The real syscall refuses more than 80 bytes. */
+                if (count * (int)sizeof(SceInt32) > 80)
+                    return (int)0x8002710B;
                 if (list_result <= 0)
                     return list_result;
                 for (index = 0; index < list_result && index < count;

@@ -7,7 +7,9 @@
 #include <stdio.h>
 #include <string.h>
 
-#define APPS_MAX_RUNNING 32
+/* The syscall copies out at most 80 bytes and fails with
+ * SCE_KERNEL_ERROR_NO_MEMORY for a larger list, so 20 IDs is the limit. */
+#define APPS_MAX_RUNNING 20
 #define APPS_PATH_CAPACITY 64
 #define APPS_NAME_CAPACITY 64
 #define APPS_LINE_CAPACITY 128
