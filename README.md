@@ -8,6 +8,25 @@ Vitacompanion is a user module which makes developing homebrews for the PS Vita 
 
 # Build
 
+The easiest way to build is with Docker, which needs nothing else installed:
+
+```bash
+make
+```
+
+This builds `build/vitacompanion.suprx` and `build/vitacompanion_kernel.skprx`
+inside a pinned [VitaSDK image](https://hub.docker.com/r/vitasdk/vitasdk).
+Other targets:
+
+| Target        | What it does                                         |
+| ------------- | ---------------------------------------------------- |
+| `make native` | build with a local VitaSDK at `$VITASDK`, no Docker  |
+| `make test`   | run the host-side tests in `tests/` (needs `cc`)     |
+| `make shell`  | open a shell in the VitaSDK image                    |
+| `make clean`  | remove the build directory                           |
+
+To build with CMake directly instead, with `VITASDK` set:
+
 ```bash
 mkdir build
 cd build
@@ -17,6 +36,13 @@ make
 
 For a side-by-side test build that does not replace the canonical
 `1337`/`1338` service, configure distinct ports and a distinct module name:
+
+```bash
+make BUILD_DIR=build-test CMAKE_ARGS="-DVITACOMPANION_FTP_PORT=1340 \
+  -DVITACOMPANION_CMD_PORT=1341 -DVITACOMPANION_MODULE_NAME=vitacompanion_test"
+```
+
+Or with CMake directly:
 
 ```bash
 cmake .. \
