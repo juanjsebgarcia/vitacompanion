@@ -70,7 +70,9 @@ static void do_net_connected()
     ftpvita_set_debug_log_cb(LOG);
 #endif
 
-    ftpvita_set_file_buf_size(512 * 1024);
+    /* Each transfer mallocs one buffer from the 1 MB taipool (main.c), so
+     * 256 KB leaves room for parallel transfers from clients like FileZilla. */
+    ftpvita_set_file_buf_size(256 * 1024);
 
     if (ftpvita_init(vita_ip, &vita_port) >= 0)
     {

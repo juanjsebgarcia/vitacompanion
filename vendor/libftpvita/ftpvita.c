@@ -166,6 +166,27 @@ static inline int client_recv_data_raw(ftpvita_client_info_t *client, void *buf,
 	}
 }
 
+/* Receive until buf is full or the peer stops sending, so uploads reach the
+ * card in large writes instead of one write per network packet. Returns the
+ * bytes received; *status is the last recv result (> 0 while more may come,
+ * 0 at end of stream, < 0 on error). */
+static unsigned int client_recv_data_fill(ftpvita_client_info_t *client,
+	unsigned char *buf, unsigned int len, int *status)
+{
+	unsigned int filled = 0;
+	int ret = 1;
+
+	while (filled < len) {
+		ret = client_recv_data_raw(client, buf + filled, len - filled);
+		if (ret <= 0)
+			break;
+		filled += (unsigned int)ret;
+	}
+
+	*status = ret;
+	return filled;
+}
+
 static inline int client_send_data_raw(ftpvita_client_info_t *client, const void *buf, unsigned int len)
 {
 	if (client->data_con_type == FTP_DATA_CONNECTION_ACTIVE) {
@@ -1118,15 +1139,20 @@ static void receive_file(ftpvita_client_info_t *client, const char *path,
 			"150 Opening ASCII mode data transfer." FTPVITA_EOL :
 			"150 Opening Image mode data transfer." FTPVITA_EOL);
 
-		while ((bytes_recv = client_recv_data_raw(client, buffer,
-			client->transfer_type == FTP_TRANSFER_TYPE_ASCII ?
-			ASCII_INPUT_SIZE : file_buf_size)) > 0) {
+		bytes_recv = 1;
+		while (bytes_recv > 0) {
+			unsigned int received = client_recv_data_fill(client, buffer,
+				client->transfer_type == FTP_TRANSFER_TYPE_ASCII ?
+				ASCII_INPUT_SIZE : file_buf_size, &bytes_recv);
+			if (received == 0)
+				break;
+
 			const unsigned char *write_buffer = buffer;
-			size_t write_size = (size_t)bytes_recv;
+			size_t write_size = received;
 
 			if (client->transfer_type == FTP_TRANSFER_TYPE_ASCII) {
 				write_size = ftpvita_ascii_decode(&ascii_state, buffer,
-					(size_t)bytes_recv, ascii_buffer, ASCII_OUTPUT_SIZE);
+					received, ascii_buffer, ASCII_OUTPUT_SIZE);
 				if (write_size == (size_t)-1) {
 					bytes_recv = SCE_NET_ERROR_EIO;
 					break;
