@@ -136,7 +136,8 @@ Install a build and start it:
 
 ```
 curl -T eboot.bin ftp://$VITA_IP:1337/ux0:/app/ABCD12345/eboot.bin
-./vitacompanion 'quit ABCD12345; launch ABCD12345'
+./vitacompanion quit ABCD12345 || true      # fails harmlessly if not running
+./vitacompanion launch ABCD12345
 ```
 
 Drive the app, then capture the result and use the file:
@@ -156,7 +157,7 @@ Fail a script when the Vita refuses something:
 Notes:
 - **Synchronous:** each call returns only when the Vita has finished. `screenshot` takes about 1.5 s from the call to the PNG on disk.
 - **One client at a time:** the command server handles requests one by one, so avoid running several clients in parallel.
-- **Chaining:** commands chained with `;` run on the Vita in order, and `wait` delays between them. `screenshot` is a separate call because it also downloads the file.
+- **Chaining:** commands chained with `;` run on the Vita in order, and `wait` delays between them. The whole chain is checked first, so an unknown command or wrong argument count runs nothing. A command that fails while running doesn't stop the rest, but the call still exits `1`. `screenshot` is a separate call because it also downloads the file.
 - **`reboot`:** it replies immediately and the Vita is then unreachable until it has restarted and rejoined Wi-Fi.
 - **Test builds:** for a side-by-side test build on other ports, set `VITA_CMD_PORT` and `VITA_FTP_PORT`, e.g. `1341` and `1340`.
 
