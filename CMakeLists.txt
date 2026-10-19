@@ -16,6 +16,12 @@ include("${VITASDK}/share/vita.cmake" REQUIRED)
 set(VITACOMPANION_FTP_PORT 1337 CACHE STRING "FTP control port")
 set(VITACOMPANION_CMD_PORT 1338 CACHE STRING "Command server port")
 set(VITACOMPANION_MODULE_NAME "vitacompanion" CACHE STRING "Vita module name")
+option(VITACOMPANION_SCREENSHOT_TIMINGS
+  "Report screenshot timings and display buffers in the command reply" OFF)
+option(VITACOMPANION_SCREENSHOT_DEBUG_LOG
+  "Write a step log to ux0:data/vitacompanion/screenshot.log" OFF)
+option(VITACOMPANION_KERNEL_ALLOW_ANY_CALLER
+  "Let any process use the kernel input and reboot API (debugging only)" OFF)
 
 if(NOT VITACOMPANION_FTP_PORT MATCHES "^[0-9]+$" OR
    VITACOMPANION_FTP_PORT LESS 1 OR VITACOMPANION_FTP_PORT GREATER 65535)
@@ -53,21 +59,35 @@ add_library(ftpvita STATIC
 
 add_executable(vitacompanion_kernel
         kernel/main.c
+        kernel/caller.c
+        kernel/caller.h
         kernel/reboot.c
         kernel/reboot.h
+        kernel/frame_capture.c
+        kernel/frame_capture.h
         kernel/threadmgr_event_flag_list.S
         kernel/touch_patch.c)
 
 target_compile_definitions(vitacompanion_kernel PRIVATE
   __VITA_KERNEL__
 )
+if(VITACOMPANION_KERNEL_ALLOW_ANY_CALLER)
+  target_compile_definitions(vitacompanion_kernel PRIVATE
+    VITACOMPANION_KERNEL_ALLOW_ANY_CALLER
+  )
+endif()
 
 target_link_libraries(vitacompanion_kernel
   taihenForKernel_stub
   SceCtrlForDriver_stub
+  SceDisplayForDriver_stub
+  SceIftuForDriver_stub
   SceKernelSuspendForDriver_stub
   SceSysmemForDriver_stub
+  SceSblACMgrForDriver_stub
+  SceSysclibForDriver_stub
   SceSysconForDriver_stub
+  SceSysrootForKernel_stub
   SceThreadmgrForDriver_stub
   gcc
 )
@@ -102,6 +122,8 @@ add_executable(vitacompanion
         src/promote_head_template.h
         src/reboot.c
         src/reboot.h
+        src/screenshot.c
+        src/screenshot.h
         src/sha1.c
         src/sha1.h
         src/input.c
@@ -118,6 +140,16 @@ target_compile_definitions(ftpvita PRIVATE
 target_compile_definitions(vitacompanion PRIVATE
   CMD_PORT=${VITACOMPANION_CMD_PORT}
 )
+if(VITACOMPANION_SCREENSHOT_TIMINGS)
+  target_compile_definitions(vitacompanion PRIVATE
+    VITACOMPANION_SCREENSHOT_TIMINGS
+  )
+endif()
+if(VITACOMPANION_SCREENSHOT_DEBUG_LOG)
+  target_compile_definitions(vitacompanion PRIVATE
+    VITACOMPANION_SCREENSHOT_DEBUG_LOG
+  )
+endif()
 
 add_dependencies(vitacompanion vitacompanion_kernel_stubs)
 
@@ -125,6 +157,7 @@ target_link_libraries(vitacompanion
   taihen_stub
   taipool
   ftpvita
+  z
   k
   gcc
   SceLibKernel_stub_weak

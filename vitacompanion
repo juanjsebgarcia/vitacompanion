@@ -1,0 +1,127 @@
+#!/usr/bin/env python3
+"""Send commands to Vita Companion and save screenshots.
+
+    vitacompanion COMMAND [ARGS...]      send a command and print the reply
+    vitacompanion "press start; wait 500ms; release start"
+    vitacompanion screenshot [DIR]       save DIR/vita-YYYYmmdd-HHMMSS.png
+                                         (DIR defaults to ./screenshot)
+
+Run `vitacompanion help` for the commands the Vita understands.
+
+Output: the Vita's reply on stdout; for `screenshot`, only the PNG's path.
+Exit codes: 0 success; 1 when any reply line starts with "Error", the Vita
+can't be reached or the download fails; 2 for usage problems.
+
+Environment: VITA_IP (required), VITA_CMD_PORT (default 1338),
+VITA_FTP_PORT (default 1337), VITA_TIMEOUT in seconds (default 60).
+Uses only the Python 3 standard library.
+"""
+
+import ftplib
+import io
+import os
+import socket
+import sys
+import time
+
+REMOTE_PATH = "ux0:/data/vitacompanion/screenshot.png"
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+DEFAULT_TIMEOUT = 60
+
+
+def send_command(host, port, command, timeout=DEFAULT_TIMEOUT):
+    with socket.create_connection((host, port), timeout=timeout) as s:
+        # No half-close: the Vita then never sends its reply.
+        s.sendall(command.encode() + b"\n")
+        chunks = []
+        while True:
+            data = s.recv(4096)
+            if not data:
+                break
+            chunks.append(data)
+    return b"".join(chunks).decode(errors="replace").strip()
+
+
+def fetch(host, port, path, timeout=DEFAULT_TIMEOUT):
+    buffer = io.BytesIO()
+    with ftplib.FTP() as ftp:
+        ftp.connect(host, port, timeout=timeout)
+        ftp.login()
+        ftp.retrbinary("RETR " + path, buffer.write, blocksize=65536)
+    return buffer.getvalue()
+
+
+def is_png(data):
+    return data[:8] == PNG_SIGNATURE and data[12:16] == b"IHDR"
+
+
+def is_error(reply):
+    return any(line.startswith("Error") for line in reply.splitlines())
+
+
+def save_screenshot(host, cmd_port, ftp_port, directory, timeout):
+    reply = send_command(host, cmd_port, "screenshot", timeout)
+    if not reply.startswith("Saved "):
+        print(reply or "Error: no reply from the Vita.", file=sys.stderr)
+        return 1
+
+    png = fetch(host, ftp_port, REMOTE_PATH, timeout)
+    if not is_png(png):
+        print("Error: the Vita's screenshot is not a PNG.", file=sys.stderr)
+        return 1
+    os.makedirs(directory, exist_ok=True)
+    stem = os.path.join(directory, time.strftime("vita-%Y%m%d-%H%M%S"))
+    path = stem + ".png"
+    suffix = 1
+    while os.path.exists(path):
+        path = "%s-%d.png" % (stem, suffix)
+        suffix += 1
+    with open(path, "wb") as output:
+        output.write(png)
+    print(path)
+    return 0
+
+
+def main(argv):
+    args = argv[1:]
+    if not args or args[0] in ("-h", "--help"):
+        print(__doc__.strip())
+        return 0 if args else 2
+
+    host = os.environ.get("VITA_IP")
+    if not host:
+        print("Error: set VITA_IP to the Vita's address.", file=sys.stderr)
+        return 2
+    try:
+        cmd_port = int(os.environ.get("VITA_CMD_PORT", "1338"))
+        ftp_port = int(os.environ.get("VITA_FTP_PORT", "1337"))
+        timeout = float(os.environ.get("VITA_TIMEOUT", DEFAULT_TIMEOUT))
+    except ValueError:
+        print("Error: VITA_CMD_PORT, VITA_FTP_PORT and VITA_TIMEOUT must be "
+              "numbers.", file=sys.stderr)
+        return 2
+
+    try:
+        if args[0] == "screenshot":
+            if len(args) > 2:
+                print("Error: usage: vitacompanion screenshot [DIR]",
+                      file=sys.stderr)
+                return 2
+            return save_screenshot(host, cmd_port, ftp_port,
+                                   args[1] if len(args) == 2 else "screenshot",
+                                   timeout)
+
+        reply = send_command(host, cmd_port, " ".join(args), timeout)
+    except (OSError, ftplib.Error, ValueError) as error:
+        print("Error: %s" % error, file=sys.stderr)
+        return 1
+
+    if not reply:
+        print("Error: no reply from the Vita.", file=sys.stderr)
+        return 1
+    print(reply)
+    return 1 if is_error(reply) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

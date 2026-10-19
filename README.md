@@ -46,6 +46,14 @@ because the user module imports its input API; the user module does not load
 the kernel module itself. Reboot after replacing either module so older copies
 are not left resident in memory.
 
+The two modules share a versioned interface, so always replace them together.
+If they don't match, input simulation is turned off until both are updated.
+
+The kernel module only accepts input and reboot requests from SceShell, where
+the user module runs. Other apps and homebrew get `0x80AC0001`. For debugging,
+configure with `-DVITACOMPANION_KERNEL_ALLOW_ANY_CALLER=ON` to remove the
+check.
+
 # Usage
 
 ## FTP server
@@ -85,6 +93,74 @@ semicolons. The final semicolon is optional:
 echo 'press cross; wait 100ms; release cross' | nc IP_TO_PSVITA 1338
 ```
 
+### Command-line tool
+
+`./vitacompanion`, at the root of this repository, is a command-line client
+for the command server. It needs only Python 3 (standard library), so it works
+from a terminal, a Makefile, CI or a coding agent without installing anything.
+
+```
+export VITA_IP=192.168.1.50                 # your Vita's address (required)
+
+./vitacompanion help                        # list the commands the Vita knows
+./vitacompanion version
+./vitacompanion launch VHBB00001
+./vitacompanion press cross                 # words are joined with spaces
+./vitacompanion 'press cross; wait 100ms; release cross'   # quote chains
+./vitacompanion screenshot                  # save ./screenshot/vita-<time>.png
+./vitacompanion screenshot out/shots        # or into another folder
+```
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `VITA_IP` | none, required | The Vita's IP address |
+| `VITA_CMD_PORT` | `1338` | Command server port |
+| `VITA_FTP_PORT` | `1337` | FTP port, used to download screenshots |
+| `VITA_TIMEOUT` | `60` | Seconds to wait for a reply; raise it for long `wait` chains |
+
+**Output and exit codes**, for scripts and agents:
+
+| Exit code | When | Output |
+| --- | --- | --- |
+| `0` | Success | The Vita's reply on stdout; for `screenshot`, only the saved PNG's path |
+| `1` | The Vita reported an error (any reply line starting with `Error`), it could not be reached, or the screenshot could not be downloaded | The reply on stdout, or the error on stderr |
+| `2` | Usage problem, such as `VITA_IP` not set | A message on stderr |
+
+To run it from elsewhere, call it by path
+(`~/src/vitacompanion/vitacompanion …`), put the repository on your `PATH`,
+or add an alias such as `alias vc=~/src/vitacompanion/vitacompanion`.
+
+#### Recipes
+
+Install a build and start it:
+
+```
+curl -T eboot.bin ftp://$VITA_IP:1337/ux0:/app/ABCD12345/eboot.bin
+./vitacompanion quit ABCD12345 || true      # fails harmlessly if not running
+./vitacompanion launch ABCD12345
+```
+
+Drive the app, then capture the result and use the file:
+
+```
+./vitacompanion 'press cross; wait 1s; release cross; wait 2s'
+png=$(./vitacompanion screenshot) || exit 1
+open "$png"                                  # or attach it, diff it, etc.
+```
+
+Fail a script when the Vita refuses something:
+
+```
+./vitacompanion promote ux0:data/my-homebrew || exit 1
+```
+
+Notes:
+- **Synchronous:** each call returns only when the Vita has finished. `screenshot` takes about 1.5 s from the call to the PNG on disk.
+- **One client at a time:** the command server handles requests one by one, so avoid running several clients in parallel.
+- **Chaining:** commands chained with `;` run on the Vita in order, and `wait` delays between them. The whole chain is checked first, so an unknown command or wrong argument count runs nothing. A command that fails while running doesn't stop the rest, but the call still exits `1`. `screenshot` is a separate call because it also downloads the file.
+- **`reboot`:** it replies immediately and the Vita is then unreachable until it has restarted and rejoined Wi-Fi.
+- **Test builds:** for a side-by-side test build on other ports, set `VITA_CMD_PORT` and `VITA_FTP_PORT`, e.g. `1341` and `1340`.
+
 ### Available commands
 
 | Command   | Arguments                       | Explanation                  |
@@ -98,6 +174,7 @@ echo 'press cross; wait 100ms; release cross' | nc IP_TO_PSVITA 1338
 | `reboot`  | none                            | reboot the console           |
 | `release` | input target                    | release one input or all synthetic input |
 | `screen`  | `on` or `off`                   | turn screen on or off        |
+| `screenshot` | none                         | save the screen to `ux0:data/vitacompanion/screenshot.png` |
 | `version` | none                            | display the loaded Vita Companion module version |
 | `wait`    | duration ending in `ms` or `s`  | wait before executing the next chained command |
 
@@ -143,6 +220,23 @@ release rear-touch 1
 ```
 
 Use `release all` to clear every synthetic button, stick, and touch.
+
+## Screenshots
+
+`./vitacompanion screenshot [DIR]` saves a PNG of the Vita's screen on your
+computer, as `DIR/vita-YYYYmmdd-HHMMSS.png` (`DIR` defaults to
+`./screenshot`), and prints its path.
+
+It sends the `screenshot` command, which saves the displayed frame to
+`ux0:data/vitacompanion/screenshot.png` on the Vita, then downloads that file
+over FTP. The Vita compresses the PNG itself, so a full-screen capture is a
+few hundred kilobytes and takes about 1.5 s in total. Without the tool,
+`echo screenshot | nc IP_TO_PSVITA 1338` saves the file on the Vita only.
+
+It works in apps that block the system screenshot, makes no sound, and shows no
+notice. It captures the frame the app has on screen at the app's own
+resolution. System overlays such as notifications or the quick menu may be
+missing, and a frame can occasionally tear.
  
  **Note**: Commands are defined in [`src/cmd_definitions.c`](https://github.com/robsdedude/vitacompanion/blob/master/src/cmd_definitions.c), you can add new commands there.
  
@@ -154,4 +248,4 @@ Use `release all` to clear every synthetic button, stick, and touch.
  
 # Acknowledgements 
 
-Thanks to xerpi for his [vita-ftploader](https://bitbucket.org/xerpi/vita-ftploader/src/87ef1d13a8aa/plugin/?at=master) plugin, I stole a lot of his code (with his permission). Thanks to cpasjuste for [PSP2SHELL](https://github.com/Cpasjuste/PSP2SHELL), it inspired me to create this tool.
+Thanks to xerpi for his [vita-ftploader](https://bitbucket.org/xerpi/vita-ftploader/src/87ef1d13a8aa/plugin/?at=master) plugin, I stole a lot of his code (with his permission). Thanks to cpasjuste for [PSP2SHELL](https://github.com/Cpasjuste/PSP2SHELL), it inspired me to create this tool. The screenshot capture follows [VitaStream](https://github.com/devnoname120/vitastream) and xerpi's [vita-udcd-uvc](https://github.com/xerpi/vita_udcd_uvc).
