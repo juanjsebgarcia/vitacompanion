@@ -170,6 +170,20 @@ class CommandFeatureTests(unittest.TestCase):
                 (void)capacity;
                 return 0;
             }
+            int wifi_off_for(unsigned int seconds)
+            {
+                (void)seconds;
+                return 0;
+            }
+            void wifi_force_set(unsigned int interval_seconds)
+            {
+                (void)interval_seconds;
+            }
+            void wifi_status(char *buf, size_t size)
+            {
+                (void)buf;
+                (void)size;
+            }
 
             int main(void)
             {
@@ -186,7 +200,8 @@ class CommandFeatureTests(unittest.TestCase):
                     "release\t\tRelease a synthetic input\n"
                     "screen \t\tTurn the screen on or off\n"
                     "version\t\tDisplay the Vita Companion version\n"
-                    "wait   \t\tWait for a duration such as 100ms or 3s\n";
+                    "wait   \t\tWait for a duration such as 100ms or 3s\n"
+                    "wifi   \t\tWi-Fi status, timed off, or keep-on watchdog\n";
 
                 cmd_help(0, 0, response);
                 return strcmp(response, expected) == 0 ? 0 : 1;

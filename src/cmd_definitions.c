@@ -5,10 +5,12 @@
 #include "promote.h"
 #include "reboot.h"
 #include "version.h"
+#include "wifi.h"
 #include <stdarg.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <vitasdk.h>
 
@@ -20,6 +22,8 @@ static bool validate_press(char **arg_list, size_t arg_count,
 static bool validate_release(char **arg_list, size_t arg_count,
     char *res_msg);
 static bool validate_wait(char **arg_list, size_t arg_count,
+    char *res_msg);
+static bool validate_wifi(char **arg_list, size_t arg_count,
     char *res_msg);
 static bool append_help_line(char **cursor, size_t *remaining,
     size_t command_width, const char *command,
@@ -36,7 +40,8 @@ const cmd_definition cmd_definitions[] = {
     {.name = "release", .description = "Release a synthetic input", .min_arg_count = 1, .max_arg_count = 2, .validator = &validate_release, .executor = &cmd_release},
     {.name = "screen", .description = "Turn the screen on or off", .min_arg_count = 1, .max_arg_count = 1, .validator = NULL, .executor = &cmd_screen},
     {.name = "version", .description = "Display the Vita Companion version", .min_arg_count = 0, .max_arg_count = 0, .validator = NULL, .executor = &cmd_version},
-    {.name = "wait", .description = "Wait for a duration such as 100ms or 3s", .min_arg_count = 1, .max_arg_count = 1, .validator = &validate_wait, .executor = &cmd_wait}
+    {.name = "wait", .description = "Wait for a duration such as 100ms or 3s", .min_arg_count = 1, .max_arg_count = 1, .validator = &validate_wait, .executor = &cmd_wait},
+    {.name = "wifi", .description = "Wi-Fi status, timed off, or keep-on watchdog", .min_arg_count = 1, .max_arg_count = 2, .validator = &validate_wifi, .executor = &cmd_wifi}
 };
 
 extern volatile int run;
@@ -316,4 +321,89 @@ void cmd_version(char **arg_list, size_t arg_count, char *res_msg)
 
   if (version_format(res_msg, CMD_RESPONSE_MAX) < 0)
     strcpy(res_msg, "Error: Could not read module version.\n");
+}
+
+static bool parse_wifi_seconds(const char *value, unsigned int max,
+    unsigned int *seconds)
+{
+  char *end;
+  unsigned long parsed;
+
+  if (*value < '0' || *value > '9')
+    return false;
+  parsed = strtoul(value, &end, 10);
+  if (*end != '\0' || parsed < 1 || parsed > max)
+    return false;
+
+  *seconds = (unsigned int)parsed;
+  return true;
+}
+
+static bool validate_wifi(char **arg_list, size_t arg_count,
+    char *res_msg)
+{
+  unsigned int seconds;
+  const char *action = arg_list[1];
+
+  if (!strcmp(action, "status") && arg_count == 2)
+    return true;
+
+  // A bare `wifi off` would cut the only link to the console, so it always
+  // takes a duration and turns Wi-Fi back on by itself.
+  if (!strcmp(action, "off") && arg_count == 3) {
+    if (parse_wifi_seconds(arg_list[2], WIFI_OFF_MAX_SECONDS, &seconds))
+      return true;
+    snprintf(res_msg, CMD_RESPONSE_MAX,
+        "Error: 'wifi off' needs a duration of 1 to %u seconds, "
+        "e.g. 'wifi off 10'.\n", WIFI_OFF_MAX_SECONDS);
+    return false;
+  }
+
+  if (!strcmp(action, "force") && arg_count == 3) {
+    if (!strcmp(arg_list[2], "off") ||
+        parse_wifi_seconds(arg_list[2], WIFI_FORCE_MAX_SECONDS, &seconds))
+      return true;
+    snprintf(res_msg, CMD_RESPONSE_MAX,
+        "Error: 'wifi force' needs an interval of 1 to %u seconds, or "
+        "'off'.\n", WIFI_FORCE_MAX_SECONDS);
+    return false;
+  }
+
+  strcpy(res_msg, "Error: use 'wifi status', 'wifi off <seconds>' or "
+      "'wifi force <seconds>|off'.\n");
+  return false;
+}
+
+void cmd_wifi(char **arg_list, size_t arg_count, char *res_msg)
+{
+  unsigned int seconds = 0;
+
+  (void)arg_count;
+  if (!strcmp(arg_list[1], "status")) {
+    wifi_status(res_msg, CMD_RESPONSE_MAX);
+  } else if (!strcmp(arg_list[1], "off")) {
+    parse_wifi_seconds(arg_list[2], WIFI_OFF_MAX_SECONDS, &seconds);
+    switch (wifi_off_for(seconds)) {
+    case 0:
+      snprintf(res_msg, CMD_RESPONSE_MAX,
+          "Wi-Fi turning off in about 2s for %us, then back on.\n", seconds);
+      break;
+    case -1:
+      strcpy(res_msg, "Error: the network thread is not running, so Wi-Fi "
+          "could not be turned back on. Not turning it off.\n");
+      break;
+    default:
+      strcpy(res_msg, "Error: a timed Wi-Fi off is already in progress.\n");
+      break;
+    }
+  } else if (!strcmp(arg_list[2], "off")) {
+    wifi_force_set(0);
+    strcpy(res_msg, "Wi-Fi force disabled.\n");
+  } else {
+    parse_wifi_seconds(arg_list[2], WIFI_FORCE_MAX_SECONDS, &seconds);
+    wifi_force_set(seconds);
+    snprintf(res_msg, CMD_RESPONSE_MAX,
+        "Wi-Fi force enabled: every %us, Wi-Fi is turned back on if it is "
+        "off.\n", seconds);
+  }
 }

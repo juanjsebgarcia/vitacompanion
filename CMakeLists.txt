@@ -109,6 +109,8 @@ add_executable(vitacompanion
         src/input_parse.c
         src/version.c
         src/version.h
+        src/wifi.c
+        src/wifi.h
         src/cmd_definitions.c
         src/cmd_definitions.h)
 
@@ -138,6 +140,8 @@ target_link_libraries(vitacompanion
   SceKernelModulemgr_stub
   SceProcessmgr_stub_weak
   ScePower_stub
+  SceRegistryMgr_stub_weak
+  SceWlanBt_stub_weak
   ${CMAKE_CURRENT_BINARY_DIR}/libvitacompanion_kernel_stub.a
 )
 

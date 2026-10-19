@@ -126,8 +126,27 @@ echo 'press cross; wait 100ms; release cross' | nc IP_TO_PSVITA 1338
 | `screen`  | `on` or `off`                   | turn screen on or off        |
 | `version` | none                            | display the loaded Vita Companion module version |
 | `wait`    | duration ending in `ms` or `s`  | wait before executing the next chained command |
+| `wifi`    | `status`, `off <seconds>`, or `force <seconds>`/`force off` | show Wi-Fi state, turn Wi-Fi off for a while, or keep it on |
 
 `wait` accepts integer durations such as `wait 1000ms` and `wait 3s`.
+
+`wifi status` reports the Wi-Fi driver state, the related registry settings,
+whether the console has an IP address, and any active timers.
+
+`wifi off <seconds>` turns Wi-Fi off for 1 to 300 seconds, then turns it back
+on by itself. There is no plain `wifi off`: the command channel runs over the
+same Wi-Fi, so nothing could turn it back on. Wi-Fi goes off about 2 seconds
+after the command, so its reply arrives first; send it last in a chain. The
+change is not saved, so a reboot also brings Wi-Fi back.
+
+`wifi force <seconds>` checks Wi-Fi at that interval (1 to 3600 seconds) and
+turns it back on if it is off, including when it was turned off in Settings.
+It leaves flight mode alone, and Wi-Fi that the system turned off for a power
+event such as suspend. `wifi force off` stops it. It is off by default and is
+not saved across reboots.
+
+The Wi-Fi requests and status bits come from reverse-engineered system
+software and are not documented by Sony.
 
 `promote` accepts only an extracted application directory, for example
 `promote ux0:data/my-homebrew`. It does not extract or install VPK files. If

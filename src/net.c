@@ -2,6 +2,7 @@
 
 #include "cmd.h"
 #include "log.h"
+#include "wifi.h"
 
 #include <ftpvita.h>
 #include <vitasdk.h>
@@ -38,6 +39,8 @@ int net_start()
 
 void net_end()
 {
+    wifi_end();
+
     if (netctl_cb_id >= 0)
     {
         sceNetCtlInetUnregisterCallback(netctl_cb_id);
@@ -149,6 +152,7 @@ int net_thread(unsigned int args, void* argp)
     while (run)
     {
         sceNetCtlCheckCallback();
+        wifi_tick();
         sceKernelDelayThread(1000 * 1000);
     }
 
