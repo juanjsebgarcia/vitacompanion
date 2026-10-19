@@ -124,7 +124,7 @@ side-by-side test build.
 | `reboot`  | none                            | reboot the console           |
 | `release` | input target                    | release one input or all synthetic input |
 | `screen`  | `on` or `off`                   | turn screen on or off        |
-| `screenshot` | none                         | save the screen to `ux0:data/vitacompanion/screenshot.bmp` |
+| `screenshot` | none                         | save the screen to `ux0:data/vitacompanion/screenshot.png` |
 | `version` | none                            | display the loaded Vita Companion module version |
 | `wait`    | duration ending in `ms` or `s`  | wait before executing the next chained command |
 
@@ -182,8 +182,9 @@ VITA_IP=IP_TO_PSVITA tools/vitacompanion screenshot shots/   # or another folder
 ```
 
 It sends `screenshot`, which saves the displayed frame to
-`ux0:data/vitacompanion/screenshot.bmp`, then fetches that file over FTP and
-converts it.
+`ux0:data/vitacompanion/screenshot.png`, then fetches that file over FTP.
+The Vita compresses the PNG itself, so a full-screen capture is a few hundred
+kilobytes and takes about a second.
 
 It works in apps that block the system screenshot, makes no sound, and shows no
 notice. It captures the frame the app has on screen at the app's own
