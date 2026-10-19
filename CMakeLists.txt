@@ -16,6 +16,8 @@ include("${VITASDK}/share/vita.cmake" REQUIRED)
 set(VITACOMPANION_FTP_PORT 1337 CACHE STRING "FTP control port")
 set(VITACOMPANION_CMD_PORT 1338 CACHE STRING "Command server port")
 set(VITACOMPANION_MODULE_NAME "vitacompanion" CACHE STRING "Vita module name")
+option(VITACOMPANION_SCREENSHOT_TIMINGS
+  "Report per-stage screenshot timings in the command reply" OFF)
 option(VITACOMPANION_KERNEL_ALLOW_ANY_CALLER
   "Let any process use the kernel input and reboot API (debugging only)" OFF)
 
@@ -136,6 +138,12 @@ target_compile_definitions(ftpvita PRIVATE
 target_compile_definitions(vitacompanion PRIVATE
   CMD_PORT=${VITACOMPANION_CMD_PORT}
 )
+if(VITACOMPANION_SCREENSHOT_TIMINGS)
+  target_compile_definitions(vitacompanion PRIVATE
+    VITACOMPANION_SCREENSHOT_TIMINGS
+    VITACOMPANION_SCREENSHOT_DEBUG_LOG
+  )
+endif()
 
 add_dependencies(vitacompanion vitacompanion_kernel_stubs)
 
@@ -143,6 +151,7 @@ target_link_libraries(vitacompanion
   taihen_stub
   taipool
   ftpvita
+  z
   k
   gcc
   SceLibKernel_stub_weak

@@ -49,50 +49,6 @@ def decode_png_rgb(png):
     return width, height, rows
 
 
-class ScreenshotToolTests(unittest.TestCase):
-    def make_bmp(self, width, height, pixels, top_down=True, bpp=32):
-        size = bpp // 8
-        stride = (width * size + 3) & ~3
-        body = b""
-        order = range(height) if top_down else reversed(range(height))
-        for y in order:
-            row = b"".join(
-                bytes((b, g, r)) + (b"\x00" if size == 4 else b"")
-                for r, g, b in pixels[y])
-            body += row + b"\x00" * (stride - len(row))
-        header = struct.pack(
-            "<2sIHHIIiiHHIIiiII", b"BM", 54 + len(body), 0, 0, 54, 40,
-            width, -height if top_down else height, 1, bpp, 0,
-            len(body), 2835, 2835, 0, 0)
-        return header + body
-
-    def test_converts_top_down_32_bit_bmp_to_png(self):
-        tool = load_tool()
-        pixels = [
-            [(255, 0, 0), (0, 255, 0), (0, 0, 255)],
-            [(1, 2, 3), (250, 128, 7), (255, 255, 255)],
-        ]
-        width, height, rows = tool.bmp_to_rgb_rows(
-            self.make_bmp(3, 2, pixels))
-        png = tool.png_bytes(width, height, rows)
-        self.assertEqual(
-            decode_png_rgb(png),
-            (3, 2, [bytes(sum(row, ())) for row in pixels]))
-
-    def test_converts_bottom_up_24_bit_bmp(self):
-        tool = load_tool()
-        pixels = [[(10, 20, 30)], [(40, 50, 60)]]
-        _, _, rows = tool.bmp_to_rgb_rows(
-            self.make_bmp(1, 2, pixels, top_down=False, bpp=24))
-        self.assertEqual(rows, [bytes((10, 20, 30)), bytes((40, 50, 60))])
-
-    def test_rejects_truncated_bmp(self):
-        tool = load_tool()
-        bmp = self.make_bmp(2, 2, [[(0, 0, 0)] * 2] * 2)
-        with self.assertRaises(ValueError):
-            tool.bmp_to_rgb_rows(bmp[:-1])
-
-
 class FakeCommandServer:
     """Answers one connection per reply, like the Vita's command server."""
 
@@ -166,17 +122,18 @@ class CommandLineTests(unittest.TestCase):
 
     def test_screenshot_fetches_and_saves_png(self):
         tool = load_tool()
-        bmp = ScreenshotToolTests().make_bmp(
-            2, 1, [[(255, 0, 0), (0, 0, 255)]])
+        png = (b"\x89PNG\r\n\x1a\n" + struct.pack(">I", 13) + b"IHDR" +
+               b"\x00" * 17)
         with tempfile.TemporaryDirectory() as tmp:
             target = os.path.join(tmp, "shots")
             out = io.StringIO()
-            with mock.patch.object(tool, "fetch", return_value=bmp) as fetch, \
+            with mock.patch.object(tool, "fetch", return_value=png) as fetch, \
                     mock.patch.dict(os.environ, {"VITA_IP": "127.0.0.1"}), \
                     mock.patch.object(
                         tool, "send_command",
                         return_value="Saved ux0:data/vitacompanion/"
-                                     "screenshot.bmp (2x1).") as send, \
+                                     "screenshot.png (2x1) in 300 ms.") \
+                    as send, \
                     contextlib.redirect_stdout(out):
                 self.assertEqual(
                     tool.main(["vitacompanion", "screenshot", target]), 0)
@@ -187,9 +144,22 @@ class CommandLineTests(unittest.TestCase):
             self.assertNotEqual(paths[0], paths[1])
             self.assertEqual(send.call_args[0][2], "screenshot")
             self.assertEqual(fetch.call_args[0][1], 1337)
-            with open(paths[0], "rb") as png:
-                self.assertEqual(decode_png_rgb(png.read()),
-                                 (2, 1, [bytes((255, 0, 0, 0, 0, 255))]))
+            self.assertEqual(fetch.call_args[0][2],
+                             "ux0:/data/vitacompanion/screenshot.png")
+            with open(paths[0], "rb") as saved:
+                self.assertEqual(saved.read(), png)
+
+    def test_screenshot_rejects_a_file_that_is_not_png(self):
+        tool = load_tool()
+        err = io.StringIO()
+        with mock.patch.object(tool, "fetch", return_value=b"BM" + b"\0" * 60), \
+                mock.patch.dict(os.environ, {"VITA_IP": "127.0.0.1"}), \
+                mock.patch.object(tool, "send_command",
+                                  return_value="Saved x (1x1) in 1 ms."), \
+                contextlib.redirect_stderr(err):
+            self.assertEqual(tool.main(["vitacompanion", "screenshot",
+                                        tempfile.gettempdir()]), 1)
+        self.assertIn("not a PNG", err.getvalue())
 
     def test_screenshot_error_reply_is_reported(self):
         tool = load_tool()
@@ -226,6 +196,7 @@ USER_HEADERS = {
         #define SCE_O_WRONLY 2
         #define SCE_O_CREAT 0x200
         #define SCE_O_TRUNC 0x400
+        #define SCE_O_APPEND 0x100
         SceUID sceIoOpen(const char *path, int flags, int mode);
         int sceIoWrite(SceUID fd, const void *data, SceSize size);
         int sceIoClose(SceUID fd);
@@ -236,6 +207,18 @@ USER_HEADERS = {
         #pragma once
         int sceIoMkdir(const char *path, int mode);
     """,
+    "psp2/kernel/threadmgr.h": r"""
+        #pragma once
+        #include <psp2/io/fcntl.h>
+        int sceKernelGetThreadCurrentPriority(void);
+        int sceKernelChangeThreadPriority(SceUID thid, int priority);
+        int sceKernelDelayThread(unsigned int delay);
+    """,
+    "psp2/kernel/processmgr.h": r"""
+        #pragma once
+        typedef unsigned long long SceUInt64;
+        SceUInt64 sceKernelGetProcessTimeWide(void);
+    """,
 }
 
 USER_STUBS = r"""
@@ -244,6 +227,7 @@ USER_STUBS = r"""
     #include <vitacompanion_kernel.h>
     #include <psp2/io/fcntl.h>
     #include <psp2/io/stat.h>
+    #include <psp2/kernel/processmgr.h>
     #include <stdio.h>
     #include <stdlib.h>
     #include <string.h>
@@ -348,59 +332,193 @@ USER_STUBS = r"""
         return 0;
     }
 
-    static unsigned int le32(const unsigned char *p)
+    static SceUInt64 now_us;
+    static SceUInt64 time_step = 10;
+    static int priority = 0x40;
+    static int lowest_priority = 0x40;
+    static int yields;
+
+    SceUInt64 sceKernelGetProcessTimeWide(void)
     {
-        return p[0] | p[1] << 8 | p[2] << 16 | (unsigned int)p[3] << 24;
+        return now_us += time_step;
+    }
+
+    int sceKernelGetThreadCurrentPriority(void)
+    {
+        return priority;
+    }
+
+    int sceKernelChangeThreadPriority(SceUID thid, int value)
+    {
+        if (thid != 0)
+            return -1;
+        priority = value;
+        if (value > lowest_priority)
+            lowest_priority = value;
+        return 0;
+    }
+
+    int sceKernelDelayThread(unsigned int delay)
+    {
+        (void)delay;
+        ++yields;
+        return 0;
+    }
+
+    static int dump_file(void)
+    {
+        FILE *out = fopen(getenv("SCREENSHOT_TEST_OUTPUT"), "wb");
+
+        if (!out || fwrite(file_data, 1, file_size, out) != file_size)
+            return 0;
+        return fclose(out) == 0;
+    }
+"""
+
+
+POOL_STUBS = r"""
+    static unsigned char pool[1 << 20];
+    static size_t pool_used = 1;
+    static void *pool_blocks[64];
+    static int pool_count;
+    static int pool_live;
+    static int pool_bad_free;
+    static int pool_misaligned;
+
+    void *pool_malloc(size_t size)
+    {
+        void *block = pool + pool_used;
+
+        if (pool_used + size > sizeof(pool) || pool_count == 64)
+            return NULL;
+        if (((uintptr_t)block & 7) != 0)
+            ++pool_misaligned;
+        pool_used += size;
+        pool_blocks[pool_count++] = block;
+        ++pool_live;
+        return block;
+    }
+
+    void pool_free(void *block)
+    {
+        int i;
+
+        if (!block)
+            return;
+        for (i = 0; i < pool_count; ++i)
+            if (pool_blocks[i] == block)
+            {
+                pool_blocks[i] = NULL;
+                --pool_live;
+                return;
+            }
+        ++pool_bad_free;
     }
 """
 
 
 class ScreenshotUserTests(unittest.TestCase):
-    def run_user(self, body):
-        compile_and_run(
-            USER_STUBS + "\nint main(void)\n{\n" + body + "\n}\n",
-            ("src/screenshot.c",),
-            headers=USER_HEADERS,
-            extra_cflags=("-Wno-unused-variable", "-Wno-unused-function"),
-        )
+    def run_user(self, body, pool=False):
+        cflags = ("-Wno-unused-variable", "-Wno-unused-function", "-lz")
+        if pool:
+            cflags += ("-Dmalloc=pool_malloc", "-Dfree=pool_free")
+        with tempfile.TemporaryDirectory() as tmp:
+            output = os.path.join(tmp, "out.png")
+            with mock.patch.dict(os.environ,
+                                 {"SCREENSHOT_TEST_OUTPUT": output}):
+                compile_and_run(
+                    USER_STUBS + (POOL_STUBS if pool else "") +
+                    "\nint main(void)\n{\n" + body + "\n}\n",
+                    ("src/screenshot.c",),
+                    headers=USER_HEADERS,
+                    extra_cflags=cflags,
+                )
+            if os.path.exists(output):
+                with open(output, "rb") as png:
+                    return png.read()
+            return None
 
-    def test_writes_trimmed_top_down_bmp(self):
-        self.run_user(r"""
+    def expected_rows(self, width, height):
+        return [bytes(value for x in range(width)
+                      for value in (0x80, y & 0xFF, x & 0xFF))
+                for y in range(height)]
+
+    def test_writes_trimmed_rgb_png(self):
+        png = self.run_user(r"""
+            screenshot_timings timings;
             uint32_t width = 0;
             uint32_t height = 0;
-            uint32_t x;
-            uint32_t y;
 
-            if (screenshot_save(&width, &height) != 0)
+            if (screenshot_save(&width, &height, &timings) != 0)
                 return 1;
             if (width != 3 || height != 2 || renamed != 1 || released != 1)
                 return 2;
-            if (file_size != 54 + 3 * 2 * 4 ||
-                file_data[0] != 'B' || file_data[1] != 'M' ||
-                le32(file_data + 2) != file_size ||
-                le32(file_data + 10) != 54 ||
-                le32(file_data + 14) != 40 ||
-                le32(file_data + 18) != 3 ||
-                (int)le32(file_data + 22) != -2 ||
-                file_data[28] != 32 ||
-                le32(file_data + 30) != 0 ||
-                le32(file_data + 34) != 3 * 2 * 4)
+            if (priority != 0x40 || lowest_priority != 0xA0 || yields == 0)
+                return 5;
+            if (timings.total_us == 0 || timings.capture_us == 0 ||
+                timings.encode_us == 0 || timings.write_us == 0 ||
+                timings.read_us == 0)
                 return 3;
-            for (y = 0; y < 2; ++y)
-                for (x = 0; x < 3; ++x)
-                {
-                    const unsigned char *p =
-                        file_data + 54 + (y * 3 + x) * 4;
-                    if (p[0] != x || p[1] != y || p[2] != 0x80)
-                        return 4;
-                }
+            return dump_file() ? 0 : 4;
+        """)
+        self.assertEqual(decode_png_rgb(png),
+                         (3, 2, self.expected_rows(3, 2)))
+
+    def test_full_frame_spans_several_idat_chunks(self):
+        png = self.run_user(r"""
+            capture_info.width = 960;
+            capture_info.height = 544;
+            capture_info.pitch = 960;
+            if (screenshot_save(0, 0, 0) != 0)
+                return 1;
+            return dump_file() ? 0 : 2;
+        """)
+        self.assertEqual(decode_png_rgb(png),
+                         (960, 544, self.expected_rows(960, 544)))
+        self.assertLess(len(png), 960 * 544 * 3)
+
+    def test_misaligning_pool_still_gives_aligned_buffers(self):
+        # Like taipool: blocks start right after the previous one, unrounded.
+        png = self.run_user(r"""
+            capture_info.width = 960;
+            capture_info.height = 544;
+            capture_info.pitch = 960;
+            if (screenshot_save(0, 0, 0) != 0)
+                return 1;
+            if (pool_bad_free != 0 || pool_live != 0 || pool_misaligned == 0)
+                return 2;
+            return dump_file() ? 0 : 3;
+        """, pool=True)
+        self.assertEqual(decode_png_rgb(png),
+                         (960, 544, self.expected_rows(960, 544)))
+
+    def test_allocations_go_through_the_aligned_helper(self):
+        source = (ROOT / "src" / "screenshot.c").read_text()
+        self.assertIn("writer.stream.zalloc = zlib_alloc;", source)
+        self.assertIn("writer.stream.zfree = zlib_free;", source)
+        body = source.split("static int write_png(", 1)[1]
+        self.assertNotIn(" malloc(", body)
+        self.assertNotIn(" free(", body)
+
+    def test_slow_encode_gives_up(self):
+        self.run_user(r"""
+            capture_info.width = 960;
+            capture_info.height = 544;
+            capture_info.pitch = 960;
+            time_step = 200 * 1000;
+            if (screenshot_save(0, 0, 0) !=
+                    VITACOMPANION_SCREENSHOT_ERROR_TIMEOUT)
+                return 1;
+            if (renamed != 0 || removed_tmp != 1 || released != 1 ||
+                priority != 0x40)
+                return 2;
             return 0;
         """)
 
     def test_failed_write_removes_temporary_file(self):
         self.run_user(r"""
-            fail_write_at = 1;
-            if (screenshot_save(0, 0) >= 0)
+            fail_write_at = 3;
+            if (screenshot_save(0, 0, 0) >= 0)
                 return 1;
             if (renamed != 0 || removed_tmp != 1 || released != 1)
                 return 2;
@@ -410,7 +528,7 @@ class ScreenshotUserTests(unittest.TestCase):
     def test_capture_error_is_returned(self):
         self.run_user(r"""
             capture_result = (int)0x80AC0003;
-            if (screenshot_save(0, 0) != (int)0x80AC0003)
+            if (screenshot_save(0, 0, 0) != (int)0x80AC0003)
                 return 1;
             if (renamed != 0 || write_calls != 0)
                 return 2;
@@ -420,7 +538,7 @@ class ScreenshotUserTests(unittest.TestCase):
     def test_rejects_inconsistent_capture(self):
         self.run_user(r"""
             capture_info.pitch = 2;
-            if (screenshot_save(0, 0) !=
+            if (screenshot_save(0, 0, 0) !=
                     VITACOMPANION_SCREENSHOT_ERROR_INVALID_FRAME)
                 return 1;
             if (released != 1 || renamed != 0)
@@ -431,21 +549,9 @@ class ScreenshotUserTests(unittest.TestCase):
     def test_mkdir_failure_stops_before_capture(self):
         self.run_user(r"""
             mkdir_result = (int)0x80010002;
-            if (screenshot_save(0, 0) != (int)0x80010002)
+            if (screenshot_save(0, 0, 0) != (int)0x80010002)
                 return 1;
             if (released != 0)
-                return 2;
-            return 0;
-        """)
-
-    def test_large_frame_is_written_in_chunks(self):
-        self.run_user(r"""
-            capture_info.width = 960;
-            capture_info.height = 544;
-            capture_info.pitch = 960;
-            if (screenshot_save(0, 0) != 0)
-                return 1;
-            if (file_size != 54 + 960 * 544 * 4 || write_calls < 32)
                 return 2;
             return 0;
         """)

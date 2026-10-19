@@ -164,10 +164,13 @@ class CommandFeatureTests(unittest.TestCase):
                 return 0;
             }
             int reboot_request(void) { return 0; }
-            int screenshot_save(uint32_t *width, uint32_t *height)
+            #include "screenshot.h"
+            int screenshot_save(uint32_t *width, uint32_t *height,
+                screenshot_timings *timings)
             {
                 (void)width;
                 (void)height;
+                (void)timings;
                 return 0;
             }
             int version_format(char *buffer, size_t capacity)
@@ -191,7 +194,7 @@ class CommandFeatureTests(unittest.TestCase):
                     "reboot    \t\tReboot the console\n"
                     "release   \t\tRelease a synthetic input\n"
                     "screen    \t\tTurn the screen on or off\n"
-                    "screenshot\t\tSave the screen as a BMP on the Vita\n"
+                    "screenshot\t\tSave the screen as a PNG on the Vita\n"
                     "version   \t\tDisplay the Vita Companion version\n"
                     "wait      \t\tWait for a duration such as 100ms or 3s\n";
 

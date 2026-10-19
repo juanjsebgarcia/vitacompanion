@@ -36,7 +36,7 @@ const cmd_definition cmd_definitions[] = {
     {.name = "reboot", .description = "Reboot the console", .min_arg_count = 0, .max_arg_count = 0, .validator = NULL, .executor = &cmd_reboot},
     {.name = "release", .description = "Release a synthetic input", .min_arg_count = 1, .max_arg_count = 2, .validator = &validate_release, .executor = &cmd_release},
     {.name = "screen", .description = "Turn the screen on or off", .min_arg_count = 1, .max_arg_count = 1, .validator = NULL, .executor = &cmd_screen},
-    {.name = "screenshot", .description = "Save the screen as a BMP on the Vita", .min_arg_count = 0, .max_arg_count = 0, .validator = NULL, .executor = &cmd_screenshot},
+    {.name = "screenshot", .description = "Save the screen as a PNG on the Vita", .min_arg_count = 0, .max_arg_count = 0, .validator = NULL, .executor = &cmd_screenshot},
     {.name = "version", .description = "Display the Vita Companion version", .min_arg_count = 0, .max_arg_count = 0, .validator = NULL, .executor = &cmd_version},
     {.name = "wait", .description = "Wait for a duration such as 100ms or 3s", .min_arg_count = 1, .max_arg_count = 1, .validator = &validate_wait, .executor = &cmd_wait}
 };
@@ -159,6 +159,7 @@ void cmd_reboot(char **arg_list, size_t arg_count, char *res_msg) {
 }
 
 void cmd_screenshot(char **arg_list, size_t arg_count, char *res_msg) {
+  screenshot_timings timings;
   uint32_t width;
   uint32_t height;
   int result;
@@ -170,15 +171,29 @@ void cmd_screenshot(char **arg_list, size_t arg_count, char *res_msg) {
     return;
   }
 
-  result = screenshot_save(&width, &height);
+  result = screenshot_save(&width, &height, &timings);
   if (result < 0) {
     snprintf(res_msg, CMD_RESPONSE_MAX,
         "Error: Could not take screenshot (0x%08X).\n", (unsigned int)result);
     return;
   }
 
-  snprintf(res_msg, CMD_RESPONSE_MAX, "Saved " SCREENSHOT_PATH " (%ux%u).\n",
-      (unsigned int)width, (unsigned int)height);
+#ifdef VITACOMPANION_SCREENSHOT_TIMINGS
+  snprintf(res_msg, CMD_RESPONSE_MAX,
+      "Saved " SCREENSHOT_PATH " (%ux%u) in %u ms "
+      "(capture %u, read %u, encode %u, write %u).\n",
+      (unsigned int)width, (unsigned int)height,
+      (unsigned int)(timings.total_us / 1000),
+      (unsigned int)(timings.capture_us / 1000),
+      (unsigned int)(timings.read_us / 1000),
+      (unsigned int)(timings.encode_us / 1000),
+      (unsigned int)(timings.write_us / 1000));
+#else
+  snprintf(res_msg, CMD_RESPONSE_MAX,
+      "Saved " SCREENSHOT_PATH " (%ux%u) in %u ms.\n",
+      (unsigned int)width, (unsigned int)height,
+      (unsigned int)(timings.total_us / 1000));
+#endif
 }
 
 void cmd_promote(char **arg_list, size_t arg_count, char *res_msg) {
