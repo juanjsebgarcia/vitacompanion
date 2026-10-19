@@ -95,21 +95,70 @@ echo 'press cross; wait 100ms; release cross' | nc IP_TO_PSVITA 1338
 
 ### Command-line tool
 
-`./vitacompanion` sends commands for you and prints the reply. It needs
-only Python 3, and exits non-zero when the Vita reports an error, so it suits
-scripts:
+`./vitacompanion`, at the root of this repository, is a command-line client
+for the command server. It needs only Python 3 (standard library), so it works
+from a terminal, a Makefile, CI or a coding agent without installing anything.
 
 ```
-export VITA_IP=IP_TO_PSVITA
-./vitacompanion help
-./vitacompanion press cross
-./vitacompanion 'press cross; wait 100ms; release cross'
-./vitacompanion screenshot              # see Screenshots below
+export VITA_IP=192.168.1.50                 # your Vita's address (required)
+
+./vitacompanion help                        # list the commands the Vita knows
+./vitacompanion version
+./vitacompanion launch VHBB00001
+./vitacompanion press cross                 # words are joined with spaces
+./vitacompanion 'press cross; wait 100ms; release cross'   # quote chains
+./vitacompanion screenshot                  # save ./screenshot/vita-<time>.png
+./vitacompanion screenshot out/shots        # or into another folder
 ```
 
-`VITA_CMD_PORT` (default 1338), `VITA_FTP_PORT` (default 1337) and
-`VITA_TIMEOUT` (seconds, default 60) override the defaults, for example for a
-side-by-side test build.
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `VITA_IP` | none, required | The Vita's IP address |
+| `VITA_CMD_PORT` | `1338` | Command server port |
+| `VITA_FTP_PORT` | `1337` | FTP port, used to download screenshots |
+| `VITA_TIMEOUT` | `60` | Seconds to wait for a reply; raise it for long `wait` chains |
+
+**Output and exit codes**, for scripts and agents:
+
+| Exit code | When | Output |
+| --- | --- | --- |
+| `0` | Success | The Vita's reply on stdout; for `screenshot`, only the saved PNG's path |
+| `1` | The Vita reported an error (any reply line starting with `Error`), it could not be reached, or the screenshot could not be downloaded | The reply on stdout, or the error on stderr |
+| `2` | Usage problem, such as `VITA_IP` not set | A message on stderr |
+
+To run it from elsewhere, call it by path
+(`~/src/vitacompanion/vitacompanion …`), put the repository on your `PATH`,
+or add an alias such as `alias vc=~/src/vitacompanion/vitacompanion`.
+
+#### Recipes
+
+Install a build and start it:
+
+```
+curl -T eboot.bin ftp://$VITA_IP:1337/ux0:/app/ABCD12345/eboot.bin
+./vitacompanion 'quit ABCD12345; launch ABCD12345'
+```
+
+Drive the app, then capture the result and use the file:
+
+```
+./vitacompanion 'press cross; wait 1s; release cross; wait 2s'
+png=$(./vitacompanion screenshot) || exit 1
+open "$png"                                  # or attach it, diff it, etc.
+```
+
+Fail a script when the Vita refuses something:
+
+```
+./vitacompanion promote ux0:data/my-homebrew || exit 1
+```
+
+Notes:
+- **Synchronous:** each call returns only when the Vita has finished. `screenshot` takes about 1.5 s from the call to the PNG on disk.
+- **One client at a time:** the command server handles requests one by one, so avoid running several clients in parallel.
+- **Chaining:** commands chained with `;` run on the Vita in order, and `wait` delays between them. `screenshot` is a separate call because it also downloads the file.
+- **`reboot`:** it replies immediately and the Vita is then unreachable until it has restarted and rejoined Wi-Fi.
+- **Test builds:** for a side-by-side test build on other ports, set `VITA_CMD_PORT` and `VITA_FTP_PORT`, e.g. `1341` and `1340`.
 
 ### Available commands
 
@@ -173,18 +222,15 @@ Use `release all` to clear every synthetic button, stick, and touch.
 
 ## Screenshots
 
-`./vitacompanion screenshot` saves a PNG of the Vita's screen on your
-computer:
+`./vitacompanion screenshot [DIR]` saves a PNG of the Vita's screen on your
+computer, as `DIR/vita-YYYYmmdd-HHMMSS.png` (`DIR` defaults to
+`./screenshot`), and prints its path.
 
-```
-VITA_IP=IP_TO_PSVITA ./vitacompanion screenshot          # into ./screenshot
-VITA_IP=IP_TO_PSVITA ./vitacompanion screenshot shots/   # or another folder
-```
-
-It sends `screenshot`, which saves the displayed frame to
-`ux0:data/vitacompanion/screenshot.png`, then fetches that file over FTP.
-The Vita compresses the PNG itself, so a full-screen capture is a few hundred
-kilobytes and takes about a second.
+It sends the `screenshot` command, which saves the displayed frame to
+`ux0:data/vitacompanion/screenshot.png` on the Vita, then downloads that file
+over FTP. The Vita compresses the PNG itself, so a full-screen capture is a
+few hundred kilobytes and takes about 1.5 s in total. Without the tool,
+`echo screenshot | nc IP_TO_PSVITA 1338` saves the file on the Vita only.
 
 It works in apps that block the system screenshot, makes no sound, and shows no
 notice. It captures the frame the app has on screen at the app's own
