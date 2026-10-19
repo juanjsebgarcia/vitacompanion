@@ -25,8 +25,8 @@ COMMAND_TIMEOUT = 30
 
 def send_command(host, port, command):
     with socket.create_connection((host, port), timeout=COMMAND_TIMEOUT) as s:
+        # No half-close: the Vita then never sends its reply.
         s.sendall(command.encode() + b"\n")
-        s.shutdown(socket.SHUT_WR)
         chunks = []
         while True:
             data = s.recv(4096)

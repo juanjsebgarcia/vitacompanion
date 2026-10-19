@@ -41,15 +41,15 @@ typedef char iftu_plane_state_size[
     sizeof(iftu_plane_state) == 0x54 ? 1 : -1];
 
 /*
- * Swap the first and third channels, so the display's R,G,B,A byte order
- * comes out as B,G,R,X, which BMP stores as is. S3.9 fixed point.
+ * Pass the channels through unchanged. On the console, A8B8G8R8 frames come
+ * out as B,G,R,X, which BMP stores as is. S3.9 fixed point.
  */
-static SceIftuCscParams swap_red_blue_params = {
+static SceIftuCscParams identity_params = {
     0, 0, 0x3FF, 0, 0x3FF, 0,
     {
-        {    0,     0, 0x200},
+        {0x200,     0,     0},
         {    0, 0x200,     0},
-        {0x200,     0,     0}
+        {    0,     0, 0x200}
     }
 };
 
@@ -180,7 +180,7 @@ static int convert_frame(uintptr_t dst_paddr, unsigned int dst_pitch,
     memset(&params, 0, sizeof(params));
     params.size = sizeof(params);
     params.unk04 = 1;
-    params.csc_params1 = &swap_red_blue_params;
+    params.csc_params1 = &identity_params;
     params.csc_control = 1;
     params.alpha = 0xFF;
 

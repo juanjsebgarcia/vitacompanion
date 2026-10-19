@@ -517,7 +517,10 @@ KERNEL_STUBS = r"""
         csc_src = src->fb;
         csc_scale[0] = src->fields[3];
         csc_scale[1] = src->fields[4];
-        if (params->alpha != 0xFF || params->csc_control != 1)
+        if (params->alpha != 0xFF || params->csc_control != 1 ||
+            params->csc_params1->ctm[0][0] != 0x200 ||
+            params->csc_params1->ctm[0][2] != 0 ||
+            params->csc_params1->ctm[2][2] != 0x200)
             return -1;
         block[0] = 0xAB;
         return csc_result;
