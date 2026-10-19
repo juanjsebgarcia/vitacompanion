@@ -3,7 +3,6 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
-#define TAIPOOL_AS_STDLIB
 #include "cmd.h"
 #include "input.h"
 #include "main.h"
