@@ -86,6 +86,8 @@ vita_create_stubs(vitacompanion_kernel_stubs vitacompanion_kernel
 add_executable(vitacompanion
         src/main.c
         src/main.h
+        src/apps.c
+        src/apps.h
         src/log.c
         src/log.h
         src/cmd.c

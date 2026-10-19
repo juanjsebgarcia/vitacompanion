@@ -551,6 +551,27 @@ class PromoteTests(unittest.TestCase):
                 if (result != 0 || strcmp(sequence, "SR") != 0)
                     return 17;
 
+                {
+                    char value[16];
+
+                    reset_state();
+                    build_sfo("TEST00001",
+                        "UP0001-TEST00001_00-CONTENTID0000001");
+                    result = promote_read_sfo_string(PARAM_PATH, "TITLE_ID",
+                        value, sizeof(value));
+                    if (result != 1 || strcmp(value, "TEST00001") != 0)
+                        return 18;
+                    result = promote_read_sfo_string(PARAM_PATH, "TITLE",
+                        value, sizeof(value));
+                    if (result != 0 || module_calls != 0)
+                        return 19;
+                    param_exists = 0;
+                    result = promote_read_sfo_string(PARAM_PATH, "TITLE_ID",
+                        value, sizeof(value));
+                    if (result >= 0)
+                        return 20;
+                }
+
                 return 0;
             }
             """,

@@ -512,6 +512,22 @@ static int prepare_promoter(void)
     return 0;
 }
 
+int promote_read_sfo_string(const char *path, const char *key,
+    char *destination, size_t capacity)
+{
+    uint8_t *sfo = NULL;
+    size_t sfo_size = 0;
+    int result;
+
+    result = read_file(path, &sfo, &sfo_size);
+    if (result < 0)
+        return result;
+
+    result = get_sfo_string(sfo, sfo_size, key, destination, capacity);
+    free(sfo);
+    return result;
+}
+
 int promote_directory(const char *path)
 {
     SceIoStat stat;

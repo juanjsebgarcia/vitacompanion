@@ -1,4 +1,5 @@
 #include "cmd_definitions.h"
+#include "apps.h"
 #include "input.h"
 #include "nosleep.h"
 #include "parser.h"
@@ -31,6 +32,7 @@ const cmd_definition cmd_definitions[] = {
     {.name = "nosleep", .description = "Control automatic suspend prevention", .min_arg_count = 1, .max_arg_count = 1, .validator = NULL, .executor = &cmd_nosleep},
     {.name = "press", .description = "Press or position a synthetic input", .min_arg_count = 1, .max_arg_count = 4, .validator = &validate_press, .executor = &cmd_press},
     {.name = "promote", .description = "Promote an extracted app directory", .min_arg_count = 1, .max_arg_count = 1, .validator = NULL, .executor = &cmd_promote},
+    {.name = "ps", .description = "List running apps", .min_arg_count = 0, .max_arg_count = 0, .validator = NULL, .executor = &cmd_ps},
     {.name = "quit", .description = "Quit an app by Title ID, or all apps", .min_arg_count = 1, .max_arg_count = 1, .validator = NULL, .executor = &cmd_quit},
     {.name = "reboot", .description = "Reboot the console", .min_arg_count = 0, .max_arg_count = 0, .validator = NULL, .executor = &cmd_reboot},
     {.name = "release", .description = "Release a synthetic input", .min_arg_count = 1, .max_arg_count = 2, .validator = &validate_release, .executor = &cmd_release},
@@ -109,10 +111,29 @@ static bool append_help_line(char **cursor, size_t *remaining,
 }
 
 
+void cmd_ps(char **arg_list, size_t arg_count, char *res_msg) {
+  int result;
+
+  (void)arg_list;
+  (void)arg_count;
+  result = apps_format_list(res_msg, CMD_RESPONSE_MAX);
+  if (result < 0) {
+    snprintf(res_msg, CMD_RESPONSE_MAX,
+      "Error: Could not list running apps (0x%08X).\n", (uint32_t)result);
+  }
+}
+
 void cmd_quit(char **arg_list, size_t arg_count, char *res_msg) {
+  int result;
+
   if (!strcmp(arg_list[1], "all")) {
-    sceAppMgrDestroyOtherApp();
-    strcpy(res_msg, "Apps quit.\n");
+    result = sceAppMgrDestroyOtherApp();
+    if (result < 0) {
+      snprintf(res_msg, CMD_RESPONSE_MAX,
+        "Error: Could not quit apps (0x%08X).\n", (uint32_t)result);
+    } else {
+      strcpy(res_msg, "Apps quit.\n");
+    }
   } else if (sceAppMgrDestroyAppByName(arg_list[1]) < 0) {
     strcpy(res_msg, "Error: cannot quit the app. Is the TITLEID correct?\n");
   } else {
