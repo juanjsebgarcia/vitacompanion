@@ -170,6 +170,12 @@ class CommandFeatureTests(unittest.TestCase):
                 (void)capacity;
                 return 0;
             }
+            int apps_format_list(char *buffer, size_t capacity)
+            {
+                (void)buffer;
+                (void)capacity;
+                return 0;
+            }
 
             int main(void)
             {
@@ -181,6 +187,7 @@ class CommandFeatureTests(unittest.TestCase):
                     "nosleep\t\tControl automatic suspend prevention\n"
                     "press  \t\tPress or position a synthetic input\n"
                     "promote\t\tPromote an extracted app directory\n"
+                    "ps     \t\tList running apps\n"
                     "quit   \t\tQuit an app by Title ID, or all apps\n"
                     "reboot \t\tReboot the console\n"
                     "release\t\tRelease a synthetic input\n"

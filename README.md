@@ -94,6 +94,7 @@ echo 'press cross; wait 100ms; release cross' | nc IP_TO_PSVITA 1338
 | `nosleep` | `on`, `off` or `status`         | enable or disable automatic suspend prevention. This is enabled by default at boot |
 | `press`   | input target and values         | press a button, position a stick, or start/update a touch |
 | `promote` | `<directory>`                   | promote an extracted Vita application directory |
+| `ps`      | none                            | list running apps with their Title ID, app ID, process ID and name |
 | `quit`    | `<TITLEID>` or `all`            | quit an application by id, or all running applications |
 | `reboot`  | none                            | reboot the console           |
 | `release` | input target                    | release one input or all synthetic input |

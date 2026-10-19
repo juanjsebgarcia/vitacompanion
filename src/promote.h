@@ -1,5 +1,7 @@
 #pragma once
 
+#include <stddef.h>
+
 typedef enum {
     VITACOMPANION_PROMOTE_ERROR_NOT_DIRECTORY = -0x7101,
     VITACOMPANION_PROMOTE_ERROR_PATH_TOO_LONG = -0x7102,
@@ -13,3 +15,8 @@ typedef enum {
 } vitacompanion_promote_error;
 
 int promote_directory(const char *path);
+
+/* Reads one string value from a param.sfo file. Returns 1 when the key was
+ * found, 0 when it is absent, and a negative error otherwise. */
+int promote_read_sfo_string(const char *path, const char *key,
+    char *destination, size_t capacity);
