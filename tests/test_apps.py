@@ -62,8 +62,63 @@ class AppListTests(unittest.TestCase):
             #include "apps.h"
 
             #include <psp2/appmgr.h>
+            #include <stdarg.h>
+            #include <stdint.h>
             #include <stdio.h>
             #include <string.h>
+
+            #ifdef snprintf
+            #undef snprintf
+            #endif
+
+            /* Like the console's libk: no field widths. Any format that
+             * apps.c could pad with is refused. */
+            int snprintf(char *buffer, size_t capacity,
+                const char *format, ...)
+            {
+                char text[64];
+                size_t length;
+                va_list arguments;
+
+                va_start(arguments, format);
+                if (strcmp(format, "0x%08X") == 0)
+                {
+                    uint32_t value = va_arg(arguments, uint32_t);
+                    int shift;
+
+                    text[0] = '0';
+                    text[1] = 'x';
+                    for (shift = 28; shift >= 0; shift -= 4)
+                        text[2 + (28 - shift) / 4] =
+                            "0123456789ABCDEF"[(value >> shift) & 0xF];
+                    text[10] = '\0';
+                }
+                else if (strcmp(format, "%s/%s/sce_sys/param.sfo") == 0)
+                {
+                    const char *root = va_arg(arguments, const char *);
+                    const char *title = va_arg(arguments, const char *);
+
+                    strcpy(text, root);
+                    strcat(text, "/");
+                    strcat(text, title);
+                    strcat(text, "/sce_sys/param.sfo");
+                }
+                else
+                {
+                    va_end(arguments);
+                    return -1;
+                }
+                va_end(arguments);
+
+                length = strlen(text);
+                if (capacity > 0)
+                {
+                    size_t copy = length < capacity - 1 ? length : capacity - 1;
+                    memcpy(buffer, text, copy);
+                    buffer[copy] = '\0';
+                }
+                return (int)length;
+            }
 
             static int list_result;
             static SceInt32 running[3];
@@ -106,18 +161,19 @@ class AppListTests(unittest.TestCase):
             int promote_read_sfo_string(const char *path, const char *key,
                 char *destination, size_t capacity)
             {
+                (void)capacity;
                 ++name_lookups;
                 if (strcmp(key, "TITLE") != 0)
                     return -2;
                 if (strcmp(path, "ux0:app/VITASHELL/sce_sys/param.sfo") == 0)
                 {
-                    snprintf(destination, capacity, "Vita\nShell");
+                    strcpy(destination, "Vita\nShell");
                     return 1;
                 }
                 /* System apps live on vs0:, so ux0: and gro0: miss first. */
                 if (strcmp(path, "vs0:app/NPXS10015/sce_sys/param.sfo") == 0)
                 {
-                    snprintf(destination, capacity, "Settings");
+                    strcpy(destination, "Settings");
                     return 1;
                 }
                 return -3;
@@ -170,7 +226,18 @@ class AppListTests(unittest.TestCase):
             }
             """,
             ("src/apps.c",),
-            {"psp2/appmgr.h": APPMGR_HEADER},
+            {
+                "psp2/appmgr.h": APPMGR_HEADER,
+                "stdio.h": r"""
+                    #ifndef TEST_STDIO_H
+                    #define TEST_STDIO_H
+                    #include <stddef.h>
+                    int snprintf(char *buffer, size_t capacity,
+                        const char *format, ...);
+                    #endif
+                """,
+            },
+            extra_cflags=("-fno-builtin-snprintf",),
         )
 
     def test_ps_and_quit_all_report_errors(self):

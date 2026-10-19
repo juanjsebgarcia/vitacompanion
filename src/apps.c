@@ -44,21 +44,49 @@ static void read_app_name(const char *title_id, char *name, size_t capacity)
     }
 }
 
-static int append_line(char *buffer, size_t capacity, size_t *used,
-    char *line, size_t line_capacity, int length)
+/* On the console, libk's snprintf ignored field widths, and lengths taken
+ * from its return value hid every row after the header. Pad columns by hand
+ * and take lengths from strlen. */
+static void append_field(char *line, size_t capacity, size_t *used,
+    const char *text, size_t width)
 {
-    if (length < 0)
-        return 0;
-    if ((size_t)length >= line_capacity)
+    size_t length = strlen(text);
+
+    if (length > capacity - 1 - *used)
+        length = capacity - 1 - *used;
+    memcpy(line + *used, text, length);
+    *used += length;
+    while (length < width && *used < capacity - 1)
     {
-        length = (int)line_capacity - 1;
-        line[length - 1] = '\n';
-        line[length] = '\0';
+        line[(*used)++] = ' ';
+        ++length;
     }
-    if ((size_t)length >= capacity - *used)
+    line[*used] = '\0';
+}
+
+static void format_line(char *line, size_t capacity, const char *title_id,
+    const char *app_id, const char *pid, const char *name)
+{
+    size_t used = 0;
+
+    /* Leave room for the newline. */
+    append_field(line, capacity - 1, &used, title_id, 11);
+    append_field(line, capacity - 1, &used, app_id, 12);
+    append_field(line, capacity - 1, &used, pid, 12);
+    append_field(line, capacity - 1, &used, name, 0);
+    line[used++] = '\n';
+    line[used] = '\0';
+}
+
+static int append_line(char *buffer, size_t capacity, size_t *used,
+    const char *line)
+{
+    size_t length = strlen(line);
+
+    if (length >= capacity - *used)
         return 0;
-    memcpy(buffer + *used, line, (size_t)length + 1);
-    *used += (size_t)length;
+    memcpy(buffer + *used, line, length + 1);
+    *used += length;
     return 1;
 }
 
@@ -69,7 +97,6 @@ int apps_format_list(char *buffer, size_t capacity)
     size_t used = 0;
     int count;
     int index;
-    int length;
 
     if (!buffer || capacity == 0)
         return -1;
@@ -81,18 +108,21 @@ int apps_format_list(char *buffer, size_t capacity)
     if (count > APPS_MAX_RUNNING)
         count = APPS_MAX_RUNNING;
     if (count == 0)
-        return snprintf(buffer, capacity, "No apps running.\n");
+    {
+        append_line(buffer, capacity, &used, "No apps running.\n");
+        return (int)used;
+    }
 
-    length = snprintf(line, sizeof(line), "%-9s  %-10s  %-10s  %s\n",
-        "TITLEID", "APPID", "PID", "NAME");
-    if (!append_line(buffer, capacity, &used, line, sizeof(line),
-        length))
+    format_line(line, sizeof(line), "TITLEID", "APPID", "PID", "NAME");
+    if (!append_line(buffer, capacity, &used, line))
         return (int)used;
 
     for (index = 0; index < count; ++index)
     {
         char title_id[32] = "?";
         char name[APPS_NAME_CAPACITY] = "";
+        char app_id[16];
+        char pid_text[16];
         SceUID pid = sceAppMgrGetProcessIdByAppIdForShell(app_ids[index]);
 
         if (pid >= 0 && sceAppMgrGetNameById(pid, title_id) >= 0)
@@ -100,10 +130,10 @@ int apps_format_list(char *buffer, size_t capacity)
         else
             strcpy(title_id, "?");
 
-        length = snprintf(line, sizeof(line), "%-9s  0x%08X  0x%08X  %s\n",
-            title_id, (uint32_t)app_ids[index], (uint32_t)pid, name);
-        if (!append_line(buffer, capacity, &used, line, sizeof(line),
-            length))
+        snprintf(app_id, sizeof(app_id), "0x%08X", (uint32_t)app_ids[index]);
+        snprintf(pid_text, sizeof(pid_text), "0x%08X", (uint32_t)pid);
+        format_line(line, sizeof(line), title_id, app_id, pid_text, name);
+        if (!append_line(buffer, capacity, &used, line))
             break;
     }
 
