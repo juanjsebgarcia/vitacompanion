@@ -46,6 +46,14 @@ because the user module imports its input API; the user module does not load
 the kernel module itself. Reboot after replacing either module so older copies
 are not left resident in memory.
 
+The two modules share a versioned interface, so always replace them together.
+If they don't match, input simulation is turned off until both are updated.
+
+The kernel module only accepts input and reboot requests from SceShell, where
+the user module runs. Other apps and homebrew get `0x80AC0001`. For debugging,
+configure with `-DVITACOMPANION_KERNEL_ALLOW_ANY_CALLER=ON` to remove the
+check.
+
 # Usage
 
 ## FTP server

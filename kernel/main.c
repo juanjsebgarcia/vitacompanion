@@ -1,6 +1,7 @@
 #include <vitacompanion_input.h>
 #include <vitacompanion_kernel.h>
 
+#include "caller.h"
 #include "touch_patch.h"
 #include "reboot.h"
 
@@ -53,6 +54,16 @@ static void state_unlock(void)
 {
     if (state_mutex >= 0)
         ksceKernelUnlockMutex(state_mutex, 1);
+}
+
+static int caller_allowed(void)
+{
+    int allowed;
+
+    state_lock();
+    allowed = vitacompanion_caller_allowed(ksceKernelGetProcessId());
+    state_unlock();
+    return allowed;
 }
 
 static void clear_state(void)
@@ -401,6 +412,8 @@ int vitaCompanionKernelGetApiVersion(void)
 
 int vitaCompanionKernelSetButtons(uint32_t buttons, int pressed)
 {
+    if (!caller_allowed())
+        return VITACOMPANION_KERNEL_ERROR_NOT_PERMITTED;
     state_lock();
     if (pressed)
         button_state |= buttons;
@@ -412,6 +425,8 @@ int vitaCompanionKernelSetButtons(uint32_t buttons, int pressed)
 
 int vitaCompanionKernelSetAnalog(int stick, int x, int y, int active)
 {
+    if (!caller_allowed())
+        return VITACOMPANION_KERNEL_ERROR_NOT_PERMITTED;
     if (stick < VITACOMPANION_STICK_LEFT ||
         stick > VITACOMPANION_STICK_RIGHT ||
         x < 0 || x > 255 || y < 0 || y > 255)
@@ -432,6 +447,9 @@ int vitaCompanionKernelSetTouch(int port, int slot_and_active, int x, int y)
     int slot = slot_and_active & 0xff;
     int active = (slot_and_active & VITACOMPANION_TOUCH_ACTIVE_FLAG) != 0;
 
+    if (!caller_allowed())
+        return VITACOMPANION_KERNEL_ERROR_NOT_PERMITTED;
+
     if (port < VITACOMPANION_TOUCH_FRONT ||
         port > VITACOMPANION_TOUCH_REAR ||
         (slot_and_active & ~0x103) != 0 ||
@@ -451,6 +469,8 @@ int vitaCompanionKernelSetTouch(int port, int slot_and_active, int x, int y)
 
 int vitaCompanionKernelReset(void)
 {
+    if (!caller_allowed())
+        return VITACOMPANION_KERNEL_ERROR_NOT_PERMITTED;
     state_lock();
     clear_state();
     state_unlock();
@@ -459,11 +479,15 @@ int vitaCompanionKernelReset(void)
 
 int vitaCompanionKernelRequestReboot(void)
 {
+    if (!caller_allowed())
+        return VITACOMPANION_KERNEL_ERROR_NOT_PERMITTED;
     return vitacompanion_reboot_request_power_event();
 }
 
 int vitaCompanionKernelForceReboot(void)
 {
+    if (!caller_allowed())
+        return VITACOMPANION_KERNEL_ERROR_NOT_PERMITTED;
     return vitacompanion_reboot_force_syscon();
 }
 

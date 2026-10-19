@@ -2,8 +2,10 @@
 
 #include <stdint.h>
 
-#define VITACOMPANION_KERNEL_ABI_VERSION 3
+#define VITACOMPANION_KERNEL_ABI_VERSION 4
 #define VITACOMPANION_KERNEL_MODULE_NAME "vitacompanion_kernel"
+/* Returned when a process other than SceShell calls a guarded export. */
+#define VITACOMPANION_KERNEL_ERROR_NOT_PERMITTED ((int)0x80AC0001)
 /* This syscall lost its fifth, stack-passed argument on device. */
 #define VITACOMPANION_TOUCH_ACTIVE_FLAG 0x100
 
